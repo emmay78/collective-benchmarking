@@ -53,4 +53,4 @@ export NCCL_IB_CUDA_SUPPORT=1
 # source /n/idreos_lab/users/emyang/develop/initenv.sh
 
 ### the command to run
-srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --collective all_reduce --tensor_size 5
+srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --collective all_reduce --tensor_size 5 --profile true

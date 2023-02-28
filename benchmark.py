@@ -4,6 +4,7 @@ import time
 import torch
 import argparse
 import torch.distributed as dist
+from torch.profiler import profile, record_function, ProfilerActivity
 from pathlib import Path
 from typing import Any
 from enum import Enum, auto
@@ -44,6 +45,8 @@ def parse_args():
                         help="job directory")
     parser.add_argument('--out_dir', default="/n/home02/emyang/collective_benchmark/benchmark_results", type=str,
                         help="output directory for benchmarking results")
+    parser.add_argument('--profile', default=False, type=bool,
+                        help="Measure with PyTorch Profiler. Disabled by default.")
     args = parser.parse_args()
 
     return args
@@ -116,6 +119,9 @@ class Task:
             current_size += size
             size_in_mb = (current_size * 4)// 2**20     
 
+            if args.profile:
+                profile_fout = open(f"{delay_dir}/{name}.profiler.data", "w")
+
             ##################################################################
             # 2. measure raw delays and memory to rule out profiler overhead #
             ##################################################################
@@ -124,10 +130,22 @@ class Task:
             for i in range(niters):
                 data_tensor = torch.randn(current_size, dtype=torch.float32, device=args.local_rank)
                 events_pre_all_reduce[i].record()
-                dist.all_reduce(data_tensor)
+
+                if args.profile:
+                    with profile(activities=[ProfilerActivity.CUDA], record_shapes=True, 
+                    profile_memory=True, use_cuda=True) as prof:
+                        dist.all_reduce(data_tensor)
+                else:
+                    dist.all_reduce(data_tensor)
+
                 events_post_all_reduce[i].record()
+                torch.cuda.synchronize(device=args.local_rank)
                 data_tensor = None
 
+                if args.profile and args.local_rank == 0:
+                    profile_fout.write(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
+                    # Trace for viewing in Chrome profiling tool
+                    # prof.export_chrome_trace(f"{delay_dir}/{name}.chrome_trace.sync")
 
             # wait for all pending CUDA ops to finish
             torch.cuda.synchronize(device=args.local_rank)
