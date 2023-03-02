@@ -161,13 +161,14 @@ class Task:
         create_args_function = self.get_create_tensor_function(args.collective)
         collective_name = self.get_collective_name(args.collective)
 
+        warmup_iters = 10
         niters = 10
         size = 5 * (2**18)
 
         ######################################
         # 1. warming up CUDACachingAllocator #
         ######################################
-        for _ in range(2):
+        for _ in range(warmup_iters):
             input_args = create_args_function(size)
             collective_function(*input_args)
 
