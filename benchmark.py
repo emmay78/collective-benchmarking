@@ -118,7 +118,6 @@ class Task:
 
             torch.cuda.set_device(args.local_rank)
             self.experiment(args)
-            # self.experiment_allreduce()
         return "Success"
 
     def get_collective_function(self, collective_to_benchmark: Collective) -> Callable:
@@ -126,6 +125,8 @@ class Task:
             return dist.all_reduce
         elif collective_to_benchmark == Collective.reduce_scatter:
             return dist.reduce_scatter_tensor
+        elif collective_to_benchmark == Collective.all_to_all:
+            return dist.all_to_all
 
     def create_tensors_all_reduce(self, size: Tuple[int, ...]) -> Tuple[torch.Tensor]:
         tensor = torch.randn(
@@ -142,6 +143,22 @@ class Task:
         )
         return (tensor_in, tensor_out)
 
+    def create_tensors_all_to_all(self, size: Tuple[int, ...]) -> Tuple[torch.Tensor]:
+        tensor_in = (
+            torch.arange(size * self.world_size, device=torch.cuda.current_device())
+            + dist.get_rank() * size * self.world_size
+        )
+
+        tensor_in = list(tensor_in.chunk(self.world_size))
+        tensor_out = list(
+            torch.empty(
+                [size * self.world_size],
+                dtype=torch.int64,
+                device=torch.cuda.current_device(),
+            ).chunk(self.world_size)
+        )
+        return (tensor_out, tensor_in)
+
     def get_create_tensor_function(
         self, collective_to_benchmark: Collective
     ) -> Callable:
@@ -149,17 +166,12 @@ class Task:
             return self.create_tensors_all_reduce
         elif collective_to_benchmark == Collective.reduce_scatter:
             return self.create_tensors_reduce_scatter
-
-    def get_collective_name(self, collective_to_benchmark: Collective) -> str:
-        if collective_to_benchmark == Collective.all_reduce:
-            return "all_reduce"
-        elif collective_to_benchmark == Collective.reduce_scatter:
-            return "reduce_scatter"
+        elif collective_to_benchmark == Collective.all_to_all:
+            return self.create_tensors_all_to_all
 
     def experiment(self, args):
         collective_function = self.get_collective_function(args.collective)
         create_args_function = self.get_create_tensor_function(args.collective)
-        collective_name = self.get_collective_name(args.collective)
 
         warmup_iters = 10
         niters = 10
@@ -176,8 +188,8 @@ class Task:
         torch.cuda.synchronize(device=args.local_rank)
         current_size = 0
         num_tasks = os.environ["WORLD_SIZE"]
-        name = collective_name + f"_{num_tasks}_{args.local_rank}"
-        delay_dir = f"{args.out_dir}/" + collective_name
+        name = args.collective.__str__() + f"_{num_tasks}_{args.local_rank}"
+        delay_dir = f"{args.out_dir}/" + args.collective.__str__()
         Path(delay_dir).mkdir(parents=True, exist_ok=True)
         fout = open(f"{delay_dir}/{name}.data", "w")
         for i in range(45):
@@ -189,16 +201,16 @@ class Task:
             size_in_mb = (current_size * 4) // 2**20
 
             if args.profile:
-                profile_fout = open(f"{delay_dir}/{name}.profiler.data", "w")
+                profile_fout = open(f"{delay_dir}/{name}.profiler.data", "a")
 
             ##################################################################
             # 2. measure raw delays and memory to rule out profiler overhead #
             ##################################################################
             events_pre = [Event(enable_timing=True) for _ in range(niters)]
             events_post = [Event(enable_timing=True) for _ in range(niters)]
-            for i in range(niters):
+            for experiment_idx in range(niters):
                 input_args = create_args_function(current_size)
-                events_pre[i].record()
+                events_pre[experiment_idx].record()
 
                 if args.profile:
                     with profile(
@@ -211,17 +223,15 @@ class Task:
                 else:
                     collective_function(*input_args)
 
-                events_post[i].record()
+                events_post[experiment_idx].record()
                 torch.cuda.synchronize(device=args.local_rank)
 
-                if args.profile and args.local_rank == 0:
+                if args.profile:
                     profile_fout.write(
                         prof.key_averages().table(
                             sort_by="cuda_time_total", row_limit=10
                         )
                     )
-                    # Trace for viewing in Chrome profiling tool
-                    # prof.export_chrome_trace(f"{delay_dir}/{name}.chrome_trace.sync")
 
             # wait for all pending CUDA ops to finish
             torch.cuda.synchronize(device=args.local_rank)
