@@ -4,6 +4,7 @@ import time
 import torch
 import argparse
 import torch.distributed as dist
+from functools import partial
 from torch.profiler import profile, record_function, ProfilerActivity
 from pathlib import Path
 from typing import Any
@@ -78,6 +79,12 @@ def parse_args():
         type=bool,
         help="Measure with PyTorch Profiler. Disabled by default.",
     )
+    parser.add_argument(
+        "--async_op",
+        default=False,
+        type=bool,
+        help="Benchmark using an asynchronous collective operation. The collective operation function returns a distributed request object on which wait() is called to block the process until completion.",
+    )
     args = parser.parse_args()
 
     return args
@@ -117,16 +124,33 @@ class Task:
             )
 
             torch.cuda.set_device(args.local_rank)
-            self.experiment(args)
+            self.experiment(args, async_op=args.async_op)
         return "Success"
 
-    def get_collective_function(self, collective_to_benchmark: Collective) -> Callable:
-        if collective_to_benchmark == Collective.all_reduce:
-            return dist.all_reduce
-        elif collective_to_benchmark == Collective.reduce_scatter:
-            return dist.reduce_scatter_tensor
-        elif collective_to_benchmark == Collective.all_to_all:
-            return dist.all_to_all
+    # If the asynchronous operation for the collective is specified,
+    # run the collective with async_op = True and block the current process
+    # until completion
+    def collective_wait(self, collective: Collective, input_args: Tuple[torch.Tensor]):
+        handle = collective(*input_args, async_op=True)
+        handle.wait()
+
+    def get_collective_function(
+        self, collective_to_benchmark: Collective, async_op: bool
+    ) -> Callable:
+        if not async_op:
+            if collective_to_benchmark == Collective.all_reduce:
+                return dist.all_reduce
+            elif collective_to_benchmark == Collective.reduce_scatter:
+                return dist.reduce_scatter_tensor
+            elif collective_to_benchmark == Collective.all_to_all:
+                return dist.all_to_all
+        else:
+            return partial(
+                self.collective_wait,
+                collective=self.get_collective_function(
+                    collective_to_benchmark, async_op=False
+                ),
+            )
 
     def create_tensors_all_reduce(self, size: Tuple[int, ...]) -> Tuple[torch.Tensor]:
         tensor = torch.randn(
@@ -169,43 +193,46 @@ class Task:
         elif collective_to_benchmark == Collective.all_to_all:
             return self.create_tensors_all_to_all
 
-    def experiment(self, args):
-        collective_function = self.get_collective_function(args.collective)
+    def experiment(self, args, async_op):
+        collective_function = self.get_collective_function(
+            args.collective, async_op=async_op
+        )
         create_args_function = self.get_create_tensor_function(args.collective)
 
         warmup_iters = 10
         niters = 10
-        size = 5 * (2**18)
+        size = 5 * (2 ** 18)  # Initial size is 5 MB
 
-        ######################################
-        # 1. warming up CUDACachingAllocator #
-        ######################################
-        for _ in range(warmup_iters):
-            input_args = create_args_function(size)
-            collective_function(*input_args)
-
-        # wait for all pending CUDA ops to finish
-        torch.cuda.synchronize(device=args.local_rank)
         current_size = 0
         num_tasks = os.environ["WORLD_SIZE"]
         name = args.collective.__str__() + f"_{num_tasks}_{args.local_rank}"
         delay_dir = f"{args.out_dir}/" + args.collective.__str__()
         Path(delay_dir).mkdir(parents=True, exist_ok=True)
         fout = open(f"{delay_dir}/{name}.data", "w")
+        if args.profile:
+            profile_fout = open(f"{delay_dir}/{name}.profiler.data", "w")
+
+        ######################################
+        # 1. warming up CUDACachingAllocator #
+        ######################################
+        for _ in range(warmup_iters):
+            input_args = create_args_function(size)
+            collective_function(input_args=input_args)
+
         for i in range(45):
             if i == 20:
-                size = 20 * (2**18)
+                size = 20 * (2 ** 18)
             elif i == 30:
-                size = 50 * (2**18)
+                size = 50 * (2 ** 18)
             current_size += size
-            size_in_mb = (current_size * 4) // 2**20
-
-            if args.profile:
-                profile_fout = open(f"{delay_dir}/{name}.profiler.data", "a")
+            size_in_mb = (current_size * 4) // 2 ** 20
 
             ##################################################################
             # 2. measure raw delays and memory to rule out profiler overhead #
             ##################################################################
+            if i == 0:
+                niters += 2
+
             events_pre = [Event(enable_timing=True) for _ in range(niters)]
             events_post = [Event(enable_timing=True) for _ in range(niters)]
             for experiment_idx in range(niters):
@@ -217,14 +244,12 @@ class Task:
                         activities=[ProfilerActivity.CUDA],
                         record_shapes=True,
                         profile_memory=True,
-                        use_cuda=True,
                     ) as prof:
-                        collective_function(*input_args)
+                        collective_function(input_args=input_args)
                 else:
-                    collective_function(*input_args)
+                    collective_function(input_args=input_args)
 
                 events_post[experiment_idx].record()
-                torch.cuda.synchronize(device=args.local_rank)
 
                 if args.profile:
                     profile_fout.write(
@@ -233,16 +258,18 @@ class Task:
                         )
                     )
 
-            # wait for all pending CUDA ops to finish
-            torch.cuda.synchronize(device=args.local_rank)
-
             delays = [
                 pre.elapsed_time(post) for pre, post in zip(events_pre, events_post)
             ]
 
+            # The first experiment has a much larger CUDA time than all other experiments.
+            # Thus, we discard the first two measurements.
+            if i == 0:
+                delays = delays[2:]
+                niters -= 2
+
             # write results
             for delay in delays:
-                print("writing results")
                 fout.write(f"{size_in_mb}, {delay:.4f}\n")
 
             # wait for all peers to finish
