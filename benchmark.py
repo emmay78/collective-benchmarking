@@ -144,6 +144,12 @@ class Task:
                 return dist.reduce_scatter_tensor
             elif collective_to_benchmark == Collective.all_to_all:
                 return dist.all_to_all
+            elif collective_to_benchmark == Collective.broadcast:
+                return dist.broadcast
+            elif collective_to_benchmark == Collective.reduce:
+                return dist.reduce
+            elif collective_to_benchmark == Collective.all_gather:
+                return dist.all_gather
         else:
             return partial(
                 self.collective_wait,
@@ -183,6 +189,27 @@ class Task:
         )
         return (tensor_out, tensor_in)
 
+    def create_tensors_broadcast(self, size: Tuple[int, ...]) -> Tuple[torch.Tensor]:
+        if dist.get_rank() == 0:
+            return (torch.randn(size, device=torch.cuda.current_device()), 0)
+        else:
+            return (torch.empty([size], device=torch.cuda.current_device()), 0)
+
+    def create_tensors_reduce(self, size: Tuple[int, ...]) -> Tuple[torch.Tensor]:
+        return (torch.randn(size, device=torch.cuda.current_device()), 0)
+
+    def create_tensors_all_gather(self, size: Tuple[int, ...]) -> Tuple[torch.Tensor]:
+        tensor_list = [
+            torch.zeros(size, dtype=torch.int64, device=torch.cuda.current_device())
+            for _ in range(self.world_size)
+        ]
+        tensor = (
+            torch.arange(size, dtype=torch.int64, device=torch.cuda.current_device())
+            + 1
+            + size * self.world_size * dist.get_rank()
+        )
+        return (tensor_list, tensor)
+
     def get_create_tensor_function(
         self, collective_to_benchmark: Collective
     ) -> Callable:
@@ -192,6 +219,12 @@ class Task:
             return self.create_tensors_reduce_scatter
         elif collective_to_benchmark == Collective.all_to_all:
             return self.create_tensors_all_to_all
+        elif collective_to_benchmark == Collective.broadcast:
+            return self.create_tensors_broadcast
+        elif collective_to_benchmark == Collective.reduce:
+            return self.create_tensors_reduce
+        elif collective_to_benchmark == Collective.all_gather:
+            return self.create_tensors_all_gather
 
     def experiment(self, args, async_op):
         collective_function = self.get_collective_function(
@@ -201,7 +234,7 @@ class Task:
 
         warmup_iters = 10
         niters = 10
-        size = 5 * (2 ** 18)  # Initial size is 5 MB
+        size = 5 * (2**18)  # Initial size is 5 MB
 
         current_size = 0
         num_tasks = os.environ["WORLD_SIZE"]
@@ -221,11 +254,11 @@ class Task:
 
         for i in range(45):
             if i == 20:
-                size = 20 * (2 ** 18)
+                size = 20 * (2**18)
             elif i == 30:
-                size = 50 * (2 ** 18)
+                size = 50 * (2**18)
             current_size += size
-            size_in_mb = (current_size * 4) // 2 ** 20
+            size_in_mb = (current_size * 4) // 2**20
 
             ##################################################################
             # 2. measure raw delays and memory to rule out profiler overhead #
