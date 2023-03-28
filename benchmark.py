@@ -5,7 +5,7 @@ import torch
 import argparse
 import torch.distributed as dist
 from functools import partial
-from torch.profiler import profile, record_function, ProfilerActivity
+from torch.profiler import profile, record_function, ProfilerActivity, schedule
 from pathlib import Path
 from typing import Any
 from enum import Enum, auto
@@ -85,6 +85,12 @@ def parse_args():
         type=bool,
         help="Benchmark using an asynchronous collective operation. The collective operation function returns a distributed request object on which wait() is called to block the process until completion.",
     )
+    parser.add_argument(
+        "--profile_size",
+        default=5 * (2**18),
+        type=int,
+        help="Data size for profile size.",
+    )
     args = parser.parse_args()
 
     return args
@@ -98,12 +104,15 @@ def print_env():
 
 
 class Task:
+    async_collective = None
+
     def __init__(self) -> None:
         pass
 
     def __call__(self, args: Any) -> Any:
 
         print_env()
+        print(args)
 
         if "WORLD_SIZE" in os.environ:
             args.world_size = int(os.environ["WORLD_SIZE"])
@@ -124,14 +133,17 @@ class Task:
             )
 
             torch.cuda.set_device(args.local_rank)
-            self.experiment(args, async_op=args.async_op)
+            if args.profile:
+                self.profile(args)
+            else:
+                self.experiment(args)
         return "Success"
 
     # If the asynchronous operation for the collective is specified,
     # run the collective with async_op = True and block the current process
     # until completion
-    def collective_wait(self, collective: Collective, input_args: Tuple[torch.Tensor]):
-        handle = collective(*input_args, async_op=True)
+    def collective_wait(self, *input_args):
+        handle = self.async_collective(*input_args, async_op=True)
         handle.wait()
 
     def get_collective_function(
@@ -150,13 +162,13 @@ class Task:
                 return dist.reduce
             elif collective_to_benchmark == Collective.all_gather:
                 return dist.all_gather
+            elif collective_to_benchmark == Collective.gather:
+                return dist.gather
         else:
-            return partial(
-                self.collective_wait,
-                collective=self.get_collective_function(
-                    collective_to_benchmark, async_op=False
-                ),
+            self.async_collective = self.get_collective_function(
+                collective_to_benchmark, async_op=False
             )
+            return self.collective_wait
 
     def create_tensors_all_reduce(self, size: Tuple[int, ...]) -> Tuple[torch.Tensor]:
         tensor = torch.randn(
@@ -209,6 +221,15 @@ class Task:
             + size * self.world_size * dist.get_rank()
         )
         return (tensor_list, tensor)
+    
+    def create_tensors_gather(self, size:Tuple[int, ...]) -> Tuple[torch.Tensor]:
+        tensor = (
+            torch.arange(size, dtype=torch.int64, device=torch.cuda.current_device())
+            + 1
+            + size * self.world_size * dist.get_rank()
+        )
+        gather_list = [None for _ in self.world_size] if dist.get_rank() == 0 else None
+        return (tensor, gather_list, 0)
 
     def get_create_tensor_function(
         self, collective_to_benchmark: Collective
@@ -225,10 +246,12 @@ class Task:
             return self.create_tensors_reduce
         elif collective_to_benchmark == Collective.all_gather:
             return self.create_tensors_all_gather
+        elif collective_to_benchmark == Collective.gather:
+            return self.create_tensors_gather
 
-    def experiment(self, args, async_op):
+    def experiment(self, args):
         collective_function = self.get_collective_function(
-            args.collective, async_op=async_op
+            args.collective, async_op=args.async_op
         )
         create_args_function = self.get_create_tensor_function(args.collective)
 
@@ -241,16 +264,17 @@ class Task:
         name = args.collective.__str__() + f"_{num_tasks}_{args.local_rank}"
         delay_dir = f"{args.out_dir}/" + args.collective.__str__()
         Path(delay_dir).mkdir(parents=True, exist_ok=True)
-        fout = open(f"{delay_dir}/{name}.data", "w")
-        if args.profile:
-            profile_fout = open(f"{delay_dir}/{name}.profiler.data", "w")
+        data_file = f"{delay_dir}/{name}"
+        if args.async_op:
+            data_file += "_async"
+        fout = open(f"{data_file}.data", "w")
 
         ######################################
         # 1. warming up CUDACachingAllocator #
         ######################################
         for _ in range(warmup_iters):
             input_args = create_args_function(size)
-            collective_function(input_args=input_args)
+            collective_function(*input_args)
 
         for i in range(45):
             if i == 20:
@@ -268,28 +292,14 @@ class Task:
 
             events_pre = [Event(enable_timing=True) for _ in range(niters)]
             events_post = [Event(enable_timing=True) for _ in range(niters)]
+
             for experiment_idx in range(niters):
                 input_args = create_args_function(current_size)
                 events_pre[experiment_idx].record()
-
-                if args.profile:
-                    with profile(
-                        activities=[ProfilerActivity.CUDA],
-                        record_shapes=True,
-                        profile_memory=True,
-                    ) as prof:
-                        collective_function(input_args=input_args)
-                else:
-                    collective_function(input_args=input_args)
-
+                collective_function(*input_args)
                 events_post[experiment_idx].record()
 
-                if args.profile:
-                    profile_fout.write(
-                        prof.key_averages().table(
-                            sort_by="cuda_time_total", row_limit=10
-                        )
-                    )
+            torch.cuda.synchronize()
 
             delays = [
                 pre.elapsed_time(post) for pre, post in zip(events_pre, events_post)
@@ -314,6 +324,52 @@ class Task:
             "data_size": size_in_mb,
         }
 
+    def profile(self, args):
+        collective_function = self.get_collective_function(
+            args.collective, async_op=args.async_op
+        )
+        create_args_function = self.get_create_tensor_function(args.collective)
+
+        num_tasks = os.environ["WORLD_SIZE"]
+        name = args.collective.__str__() + f"_{num_tasks}_{args.local_rank}"
+        delay_dir = f"{args.out_dir}/" + args.collective.__str__()
+        Path(delay_dir).mkdir(parents=True, exist_ok=True)
+        profile_file = f"{delay_dir}/{name}"
+        if args.async_op:
+            profile_file += "_async"
+        profile_fout = open(f"{profile_file}.profiler.data", "w")
+
+        schedule = torch.profiler.schedule(
+            wait=1,
+            warmup=5,
+            active=10,
+        )
+
+        input_args = create_args_function(args.profile_size)
+
+        with profile(
+            activities=[ProfilerActivity.CUDA],
+            record_shapes=True,
+            profile_memory=True,
+            schedule=schedule
+        ) as prof:
+            for _ in range(15):
+                collective_function(*input_args)
+                prof.step()
+        
+        profile_fout.write(
+            prof.key_averages().table(
+                sort_by="cuda_time_total", row_limit=10
+            )
+        )
+
+        profile_fout.close()
+        self.teardown()
+        size_in_mb = (args.profile_size * 4) // 2**20
+        return {
+            "data_size": size_in_mb
+        }
+        
     def teardown(self):
         dist.destroy_process_group()
 

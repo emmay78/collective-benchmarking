@@ -3,15 +3,16 @@
 ### This script submits a SLURM job for benchmark.py
 
 #SBATCH --job-name=nccl-benchmarking
-#SBATCH --partition=gpu_test
+#SBATCH --partition=seas_gpu
 #SBATCH --time=1:00:00
-
 ### e.g. request 4 nodes with 1 gpu each, totally 4 gpus (WORLD_SIZE==4)
 ### Note: --gres=gpu:x should equal to ntasks-per-node
-
+#SBATCH --contiguous
+#SBATCH --constraint="holyhdr&a100"
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=4
-#SBATCH --gres=gpu:4
+###SBATCH --gres=gpu:4
+#SBATCH --gres=gpu:nvidia_a100-sxm4-80gb:4
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64gb
 ### chdir specifies the path of the main file that you want to run using srun i.e. the path of 'benchmark.py' in our case
@@ -24,6 +25,8 @@
 #SBATCH --output=/n/holyscratch01/idreos_lab/Users/%u/job_logs/%x-%j.out
 #SBATCH --error=/n/holyscratch01/idreos_lab/Users/%u/job_logs/%x-%j.err
 #SBATCH --open-mode=append
+
+scontrol show job $SLURM_JOBID
 
 # create directory for logs for this SLURM job
 mkdir /n/holyscratch01/idreos_lab/Users/emyang/job_logs/${SLURM_JOB_ID}
@@ -53,4 +56,12 @@ export NCCL_IB_CUDA_SUPPORT=1
 # source /n/idreos_lab/users/emyang/develop/initenv.sh
 
 ### the command to run
-srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --collective all_gather --profile true --async_op true
+COLLECTIVES=("all_reduce" "reduce_scatter" "all_to_all" "broadcast" "reduce" "all_gather" "gather")
+for collective in ${COLLECTIVES[@]} 
+do
+    echo $collective
+    srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --collective $collective --profile true
+    srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --collective $collective --async_op true --profile true
+    srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --collective $collective
+    srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --collective $collective --async_op true
+done
