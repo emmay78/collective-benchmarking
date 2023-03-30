@@ -2,7 +2,7 @@
 
 ### This script submits a SLURM job for benchmark.py
 
-#SBATCH --job-name=nccl-benchmarking
+#SBATCH --job-name=nccl-coalesce-bench
 #SBATCH --partition=gpu_test
 #SBATCH --time=1:00:00
 ### e.g. request 4 nodes with 1 gpu each, totally 4 gpus (WORLD_SIZE==4)
@@ -56,16 +56,4 @@ export NCCL_IB_CUDA_SUPPORT=1
 # source /n/idreos_lab/users/emyang/develop/initenv.sh
 
 ### the command to run
-# COLLECTIVES=("all_reduce" "reduce_scatter" "all_to_all" "broadcast" "reduce" "all_gather" "gather")
-# for collective in ${COLLECTIVES[@]} 
-# do
-#     echo $collective
-#     srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --collective $collective --profile true
-#     srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --collective $collective --async_op true --profile true
-#     srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --collective $collective
-#     srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --collective $collective --async_op true
-# done
-srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --collective gather --profile true
-srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --collective gather --async_op true --profile true
-srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --collective gather
-srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --collective gather --async_op true
+srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 group_benchmark.py --coalesce true

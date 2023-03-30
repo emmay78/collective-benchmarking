@@ -221,14 +221,21 @@ class Task:
             + size * self.world_size * dist.get_rank()
         )
         return (tensor_list, tensor)
-    
-    def create_tensors_gather(self, size:Tuple[int, ...]) -> Tuple[torch.Tensor]:
+
+    def create_tensors_gather(self, size: Tuple[int, ...]) -> Tuple[torch.Tensor]:
         tensor = (
             torch.arange(size, dtype=torch.int64, device=torch.cuda.current_device())
             + 1
             + size * self.world_size * dist.get_rank()
         )
-        gather_list = [None for _ in self.world_size] if dist.get_rank() == 0 else None
+        gather_list = (
+            [
+                torch.empty([size], dtype=torch.int64, device=torch.cuda.current_device())
+                for _ in range(self.world_size)
+            ]
+            if dist.get_rank() == 0
+            else None
+        )
         return (tensor, gather_list, 0)
 
     def get_create_tensor_function(
@@ -351,25 +358,21 @@ class Task:
             activities=[ProfilerActivity.CUDA],
             record_shapes=True,
             profile_memory=True,
-            schedule=schedule
+            schedule=schedule,
         ) as prof:
             for _ in range(15):
                 collective_function(*input_args)
                 prof.step()
-        
+
         profile_fout.write(
-            prof.key_averages().table(
-                sort_by="cuda_time_total", row_limit=10
-            )
+            prof.key_averages().table(sort_by="cuda_time_total", row_limit=10)
         )
 
         profile_fout.close()
         self.teardown()
         size_in_mb = (args.profile_size * 4) // 2**20
-        return {
-            "data_size": size_in_mb
-        }
-        
+        return {"data_size": size_in_mb}
+
     def teardown(self):
         dist.destroy_process_group()
 
