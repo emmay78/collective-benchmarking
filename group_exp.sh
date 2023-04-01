@@ -56,4 +56,9 @@ export NCCL_IB_CUDA_SUPPORT=1
 # source /n/idreos_lab/users/emyang/develop/initenv.sh
 
 ### the command to run
-srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 group_benchmark.py --coalesce true
+COLLECTIVES=("all_reduce" "all_gather" "reduce_scatter")
+for collective in ${COLLECTIVES[@]} 
+do
+    srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 group_benchmark.py --collective $collective
+    srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 group_benchmark.py --coalesce true --collective $collective
+done

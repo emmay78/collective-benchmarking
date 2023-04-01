@@ -268,7 +268,7 @@ class Task:
 
         current_size = 0
         num_tasks = os.environ["WORLD_SIZE"]
-        name = args.collective.__str__() + f"_{num_tasks}_{args.local_rank}"
+        name = args.collective.__str__() + f"_{num_tasks}_{dist.get_rank()}"
         delay_dir = f"{args.out_dir}/" + args.collective.__str__()
         Path(delay_dir).mkdir(parents=True, exist_ok=True)
         data_file = f"{delay_dir}/{name}"
@@ -338,7 +338,7 @@ class Task:
         create_args_function = self.get_create_tensor_function(args.collective)
 
         num_tasks = os.environ["WORLD_SIZE"]
-        name = args.collective.__str__() + f"_{num_tasks}_{args.local_rank}"
+        name = args.collective.__str__() + f"_{num_tasks}_{dist.get_rank()}"
         delay_dir = f"{args.out_dir}/" + args.collective.__str__()
         Path(delay_dir).mkdir(parents=True, exist_ok=True)
         profile_file = f"{delay_dir}/{name}"

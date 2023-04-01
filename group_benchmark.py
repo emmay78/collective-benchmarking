@@ -11,14 +11,26 @@ import itertools
 from typing import Any
 from enum import Enum, auto
 from torch.cuda import Event
-from typing import Tuple, Callable, Set, List
+from typing import Tuple, Callable, Set, List, Optional
 
-NUM_DISCARD = 2
+class Collective(Enum):
+    all_reduce = "all_reduce"
+    all_gather = "all_gather"
+    reduce_scatter = "reduce_scatter"
+
+    def __str__(self) -> str:
+        return self.value
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
-
+    parser.add_argument(
+        "--collective",
+        default=Collective.all_gather,
+        type=Collective,
+        choices=list(Collective),
+        help="collective function to benchmark [all_reduce, broadcast, reduce, scatter, gather, all_gather, all_to_all, reduce_scatter]",
+    )
     parser.add_argument(
         "--coalesce",
         default=False,
@@ -63,7 +75,7 @@ def parse_args():
     )
     parser.add_argument(
         "--out_dir",
-        default="/n/home02/emyang/collective_benchmark/benchmark_results",
+        default="/n/home02/emyang/collective_benchmark/coalescing_benchmark_results",
         type=str,
         help="output directory for benchmarking results",
     )
@@ -115,288 +127,170 @@ class Task:
             )
 
             torch.cuda.set_device(args.local_rank)
-            if args.coalesce:
-                self.experiment_coalesce(
-                    args, [torch.Size([args.data_size]) for _ in range(args.world_size)], args.num_to_coalesce
-                )
-            else:
-                self.experiment_base(
-                    args, [torch.Size([args.data_size]) for _ in range(args.world_size)]
-                )
+
+            self.experiment(args)
         return "Success"
 
     def rank0_print(self, rank: int, *args, **kwargs):
         if rank == 0:
             print(*args, **kwargs, flush=True)
 
-    def experiment_coalesce(
-        self, args, size_per_rank: List[torch.Size], num_to_coalesce: int
-    ):
-        from torch.distributed.distributed_c10d import _coalescing_manager
+    def get_collective_function(self, collective_to_benchmark: Collective):
+        if collective_to_benchmark == Collective.all_reduce:
+            return dist.all_reduce
+        elif collective_to_benchmark == Collective.reduce_scatter:
+            return dist.reduce_scatter_tensor
+        elif collective_to_benchmark == Collective.all_gather:
+            return dist.all_gather_into_tensor
 
-        TO_COALESCE = True
-        dist.barrier()
-
-        rank = dist.get_rank()
-        world_size = args.world_size
-        self.rank0_print(rank, f"World size = {world_size}")
-
-        dest_numel = sum(size.numel() for size in size_per_rank)
-        # TODO: Assume even sizes per rank for now
-        assert dest_numel % (num_to_coalesce * world_size) == 0, (
-            f"dest_numel: {dest_numel}\n"
-            f"num_coalesced: {num_to_coalesce}\n"
-            f"world_size: {world_size}"
-        )
-        self.rank0_print(rank, f"[Rank 0] total numel: {dest_numel}")
-        torch.manual_seed(0)
-        dest_tensor_ref = torch.randn((dest_numel,), device=torch.device("cuda"))
-        print(
-            f"[Rank {rank}] local coalesced numel: {dest_numel // world_size}",
-            flush=True,
-        )
-        print(
-            f"[Rank {rank}] local numel: {dest_numel // world_size // num_to_coalesce}",
-            flush=True,
-        )
-        dest_tensor = torch.empty((dest_numel,), device=torch.device("cuda"))
-
-        times_per_all_gather = []
-        outer_incr = dest_numel // num_to_coalesce
-        inner_incr = outer_incr // world_size
-        for _ in range(10):
-            start = torch.cuda.Event(enable_timing=True)
-            end = torch.cuda.Event(enable_timing=True)
-            # offsets = list(range(0, outer_incr, inner_incr))
-            start.record()
-            reqs = []
-            with _coalescing_manager(
-                group=None, device=torch.device("cuda"), reqs=reqs
-            ) if TO_COALESCE else contextlib.suppress():
-                for i in range(num_to_coalesce):
-                    dest_offset = outer_incr * i
-                    dest_tensor_i = dest_tensor[
-                        dest_offset : dest_offset + outer_incr
-                    ]
-                    # tensor_list = list(
-                    #     torch.tensor_split(
-                    #         dest_tensor[dest_offset : dest_offset + outer_incr],
-                    #         offsets[1:],
-                    #     )
-                    # )
-                    src_tensor = dest_tensor_ref[
-                        dest_offset
-                        + rank * inner_incr : dest_offset
-                        + (rank + 1) * inner_incr
-                    ]
-                    if TO_COALESCE:
-                        # TODO: Use `all_gather_into_tensor()` for now because
-                        # the final copy in `all_gather()` is not properly
-                        # blocked on in the coalescing manager.
-                        # ret = dist.all_gather(
-                        #     tensor_list,
-                        #     src_tensor,
-                        #     async_op=True,
-                        # )
-                        ret = dist.all_gather_into_tensor(
-                            dest_tensor_i,
-                            src_tensor,
-                            async_op=True,
-                        )
-                        reqs.append(ret)
-                    else:
-                        dist.all_gather_into_tensor(dest_tensor_i, src_tensor)
-                        # TODO: Same as above.
-                        # dist.all_gather(tensor_list, src_tensor)
-            for req in reqs:
-                req.wait()
-            end.record()
-            torch.cuda.synchronize()
-            elapsed_time = start.elapsed_time(end)
-            if not torch.equal(dest_tensor, dest_tensor_ref):
-                torch.set_printoptions(profile="full")
-                self.rank0_print(rank, torch.eq(dest_tensor, dest_tensor_ref))
-                torch.set_printoptions(profile="default")
-            assert torch.equal(
-                dest_tensor, dest_tensor_ref
-            ), f"Ref: {dest_tensor_ref}\nActual: {dest_tensor}"
-            with torch.no_grad():
-                dest_tensor.zero_()
-            times_per_all_gather.append(elapsed_time)
-
-        time_per_all_gather = sum(times_per_all_gather[NUM_DISCARD:]) / len(
-            times_per_all_gather[NUM_DISCARD:]
-        )
-        self.rank0_print(
-            rank,
-            f"[Rank {rank}] time / coalesced all-gather ({num_to_coalesce} coalesced): {time_per_all_gather:.5f} ms",
-        )
-        return times_per_all_gather, time_per_all_gather
-
-    def experiment_base(self, args, size_per_rank: List[torch.Size]):
+    def experiment(self, args):
         dist.barrier()
         rank = dist.get_rank()
-        sizes: Set[torch.Size] = set()
-        for size in size_per_rank:
-            assert len(size) == 1, f"Expects 1D shapes but got {len(size)}D shape"
-            sizes.add(size)
-        assert len(sizes) == 1, f"all_gather_base() requires even input sizes"
-        dest_numel = sum(size.numel() for size in size_per_rank)
-        self.rank0_print(rank, f"[Rank 0] total numel: {dest_numel}")
-        offsets = [0] + list(
-            itertools.accumulate([size.numel() for size in size_per_rank])
-        )
-        torch.manual_seed(0)
+
+        name = f"{args.collective.__str__()}_{args.world_size}_{dist.get_rank()}"
+        delay_dir = f"{args.out_dir}/{args.collective.__str__()}/"
+        if args.coalesce:
+            delay_dir += "/coalesce/"
+        else:
+            delay_dir += "/default/"
+        Path(delay_dir).mkdir(parents=True, exist_ok=True)
+        data_file = f"{delay_dir}/{name}"
+        fout = open(f"{data_file}.data", "w")
+
+        size = 5 * (2**18)  # Initial total size is 5 MB
+        per_rank_size = torch.Size([size // self.world_size])
+        dest_numel = per_rank_size.numel() * self.world_size
         dest_tensor_ref = torch.randn((dest_numel,), device=torch.cuda.current_device())
-        src_tensor = dest_tensor_ref[offsets[rank] : offsets[rank + 1]]
-        print(f"[Rank {rank}] local numel: {src_tensor.numel()}", flush=True)
         dest_tensor = torch.empty((dest_numel,), device=torch.cuda.current_device())
 
-        times_per_all_gather: List[float] = []
-        for _ in range(10 + NUM_DISCARD):
-            start = torch.cuda.Event(enable_timing=True)
-            end = torch.cuda.Event(enable_timing=True)
-            start.record()
-            dist.all_gather_into_tensor(
-                dest_tensor,
-                src_tensor,
+        niters = 10
+        discard_iters = 2
+
+        current_size = 0
+        for i in range(45):
+            if i == 20:
+                size = 20 * (2**18)
+            elif i == 30:
+                size = 50 * (2**18)
+            current_size += size
+
+            per_rank_size = torch.Size([current_size // self.world_size])
+            dest_numel = per_rank_size.numel() * self.world_size
+            dest_tensor_ref = torch.randn(
+                (dest_numel,), device=torch.cuda.current_device()
             )
-            end.record()
-            torch.cuda.synchronize()
-            elapsed_time = start.elapsed_time(end)
-            assert torch.equal(dest_tensor, dest_tensor_ref)
-            with torch.no_grad():
-                dest_tensor.zero_()
-            times_per_all_gather.append(elapsed_time)
+            dest_tensor = torch.empty((dest_numel,), device=torch.cuda.current_device())
 
-        time_per_all_gather = sum(times_per_all_gather[NUM_DISCARD:]) / len(
-            times_per_all_gather[NUM_DISCARD:]
-        )
-        self.rank0_print(
-            rank,
-            f"[Rank {rank}] time / `_all_gather_base()`: {time_per_all_gather:.5f} ms",
-        )
-        return times_per_all_gather, time_per_all_gather
+            elapsed_times = []
 
-    # def experiment(self, args):
-    #     collective_function = self.get_collective_function(
-    #         args.collective, async_op=args.async_op
-    #     )
-    #     create_args_function = self.get_create_tensor_function(args.collective)
+            for _ in range(niters + discard_iters):
+                start = torch.cuda.Event(enable_timing=True)
+                end = torch.cuda.Event(enable_timing=True)
+                start.record()
 
-    #     warmup_iters = 10
-    #     niters = 10
-    #     size = 5 * (2**18)  # Initial size is 5 MB
+                if args.coalesce:
+                    self.experiment_coalesce(args, dest_tensor, dest_tensor_ref)
+                else:
+                    self.experiment_default(args, dest_tensor, dest_tensor_ref)
 
-    #     current_size = 0
-    #     num_tasks = os.environ["WORLD_SIZE"]
-    #     name = args.collective.__str__() + f"_{num_tasks}_{args.local_rank}"
-    #     delay_dir = f"{args.out_dir}/" + args.collective.__str__()
-    #     Path(delay_dir).mkdir(parents=True, exist_ok=True)
-    #     data_file = f"{delay_dir}/{name}"
-    #     if args.async_op:
-    #         data_file += "_async"
-    #     fout = open(f"{data_file}.data", "w")
+                end.record()
+                torch.cuda.synchronize()
 
-    #     ######################################
-    #     # 1. warming up CUDACachingAllocator #
-    #     ######################################
-    #     for _ in range(warmup_iters):
-    #         input_args = create_args_function(size)
-    #         collective_function(*input_args)
+                elapsed_time = start.elapsed_time(end)
 
-    #     for i in range(45):
-    #         if i == 20:
-    #             size = 20 * (2**18)
-    #         elif i == 30:
-    #             size = 50 * (2**18)
-    #         current_size += size
-    #         size_in_mb = (current_size * 4) // 2**20
+                with torch.no_grad():
+                    dest_tensor.zero_()
+                elapsed_times.append(elapsed_time)
 
-    #         ##################################################################
-    #         # 2. measure raw delays and memory to rule out profiler overhead #
-    #         ##################################################################
-    #         if i == 0:
-    #             niters += 2
+            time_per_call = sum(elapsed_times[discard_iters:]) / len(
+                elapsed_times[discard_iters:]
+            )
 
-    #         events_pre = [Event(enable_timing=True) for _ in range(niters)]
-    #         events_post = [Event(enable_timing=True) for _ in range(niters)]
 
-    #         for experiment_idx in range(niters):
-    #             input_args = create_args_function(current_size)
-    #             events_pre[experiment_idx].record()
-    #             collective_function(*input_args)
-    #             events_post[experiment_idx].record()
+            self.rank0_print(
+                rank,
+                f"[Rank {rank}] time / coalesced all-gather ({args.num_to_coalesce} coalesced): {time_per_call:.5f} ms",
+            )
 
-    #         torch.cuda.synchronize()
+            size_in_mb = (dest_numel * 4) // 2**20
+            # write results
+            for delay in elapsed_times[discard_iters:]:
+                fout.write(f"{size_in_mb}, {delay:.4f}\n")
 
-    #         delays = [
-    #             pre.elapsed_time(post) for pre, post in zip(events_pre, events_post)
-    #         ]
+            dist.barrier(device_ids=[args.local_rank])
 
-    #         # The first experiment has a much larger CUDA time than all other experiments.
-    #         # Thus, we discard the first two measurements.
-    #         if i == 0:
-    #             delays = delays[2:]
-    #             niters -= 2
+        fout.close()
 
-    #         # write results
-    #         for delay in delays:
-    #             fout.write(f"{size_in_mb}, {delay:.4f}\n")
+    def coalesce_inputs(
+        self,
+        collective: Collective,
+        dest_tensor: torch.Tensor,
+        dest_tensor_ref: torch.Tensor,
+        num_to_coalesce: int,
+        coalesce_iter: int,
+    ):
+        rank = dist.get_rank()
+        outer_incr = dest_tensor_ref.size(dim=0) // num_to_coalesce
+        inner_incr = outer_incr // args.world_size
 
-    #         # wait for all peers to finish
-    #         dist.barrier(device_ids=[args.local_rank])
+        dest_offset = outer_incr * coalesce_iter
+        if args.collective == Collective.all_reduce:
+            src_tensor = dest_tensor_ref[
+                dest_offset + rank * inner_incr : dest_offset + (rank + 1) * inner_incr
+            ]
+            return (src_tensor,)
+        else:
+            dest_tensor_i = dest_tensor[dest_offset : dest_offset + outer_incr]
+            src_tensor = dest_tensor_ref[
+                dest_offset + rank * inner_incr : dest_offset + (rank + 1) * inner_incr
+            ]
+            if args.collective == Collective.all_gather:
+                return (dest_tensor_i, src_tensor)
+            else:
+                return (src_tensor, dest_tensor_i)
 
-    #     fout.close()
-    #     self.teardown()
-    #     return {
-    #         "data_size": size_in_mb,
-    #     }
+    def experiment_coalesce(
+        self, args, dest_tensor: torch.Tensor, dest_tensor_ref: torch.Tensor
+    ):
+        collective_function = self.get_collective_function(args.collective)
 
-    # def profile(self, args):
-    #     collective_function = self.get_collective_function(
-    #         args.collective, async_op=args.async_op
-    #     )
-    #     create_args_function = self.get_create_tensor_function(args.collective)
+        from torch.distributed.distributed_c10d import _coalescing_manager
 
-    #     num_tasks = os.environ["WORLD_SIZE"]
-    #     name = args.collective.__str__() + f"_{num_tasks}_{args.local_rank}"
-    #     delay_dir = f"{args.out_dir}/" + args.collective.__str__()
-    #     Path(delay_dir).mkdir(parents=True, exist_ok=True)
-    #     profile_file = f"{delay_dir}/{name}"
-    #     if args.async_op:
-    #         profile_file += "_async"
-    #     profile_fout = open(f"{profile_file}.profiler.data", "w")
+        reqs = []
+        with _coalescing_manager(group=None, device=torch.device("cuda"), reqs=reqs):
+            for i in range(args.num_to_coalesce):
+                input_args = self.coalesce_inputs(
+                    args.collective, dest_tensor, dest_tensor_ref, args.num_to_coalesce, i
+                )
+                ret = collective_function(*input_args, async_op=True)
+                reqs.append(ret)
 
-    #     schedule = torch.profiler.schedule(
-    #         wait=1,
-    #         warmup=5,
-    #         active=10,
-    #     )
+        for req in reqs:
+            req.wait()
 
-    #     input_args = create_args_function(args.profile_size)
+    def default_inputs(
+        self,
+        collective: Collective,
+        dest_tensor: torch.Tensor,
+        dest_tensor_ref: torch.Tensor,
+    ):
+        rank = dist.get_rank()
+        offsets = [0] + list(itertools.accumulate([dest_tensor_ref.size(dim=0) // self.world_size for _ in range(self.world_size)]))
+        src_tensor = dest_tensor_ref[offsets[rank] : offsets[rank + 1]]
 
-    #     with profile(
-    #         activities=[ProfilerActivity.CUDA],
-    #         record_shapes=True,
-    #         profile_memory=True,
-    #         schedule=schedule,
-    #     ) as prof:
-    #         for _ in range(15):
-    #             collective_function(*input_args)
-    #             prof.step()
+        if args.collective == Collective.all_reduce:
+            return (src_tensor,)
+        elif args.collective == Collective.all_gather:
+            return (dest_tensor, src_tensor)
+        elif args.collective == Collective.reduce_scatter:
+            return (src_tensor, dest_tensor)
 
-    #     profile_fout.write(
-    #         prof.key_averages().table(sort_by="cuda_time_total", row_limit=10)
-    #     )
-
-    #     profile_fout.close()
-    #     self.teardown()
-    #     size_in_mb = (args.profile_size * 4) // 2**20
-    #     return {"data_size": size_in_mb}
-
-    # def teardown(self):
-    #     dist.destroy_process_group()
+    def experiment_default(
+        self, args, dest_tensor: torch.Tensor, dest_tensor_ref: torch.Tensor
+    ):
+        collective_function = self.get_collective_function(args.collective)
+        input_args = self.default_inputs(args.collective, dest_tensor, dest_tensor_ref)
+        collective_function(*input_args)
 
 
 if __name__ == "__main__":
