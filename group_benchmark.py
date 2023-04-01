@@ -98,8 +98,6 @@ def print_env():
 
 
 class Task:
-    async_collective = None
-
     def __init__(self) -> None:
         pass
 
