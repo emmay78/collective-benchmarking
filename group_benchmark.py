@@ -194,10 +194,9 @@ class Task:
                 end.record()
                 torch.cuda.synchronize()
 
-                elapsed_time = start.elapsed_time(end)
+                dest_tensor.zero_()
 
-                with torch.no_grad():
-                    dest_tensor.zero_()
+                elapsed_time = start.elapsed_time(end)
                 elapsed_times.append(elapsed_time)
 
             time_per_call = sum(elapsed_times[discard_iters:]) / len(
