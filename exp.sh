@@ -4,7 +4,7 @@
 
 #SBATCH --job-name=nccl-benchmarking
 #SBATCH --partition=gpu_test
-#SBATCH --time=1:00:00
+#SBATCH --time=2:00:00
 ### e.g. request 4 nodes with 1 gpu each, totally 4 gpus (WORLD_SIZE==4)
 ### Note: --gres=gpu:x should equal to ntasks-per-node
 ###SBATCH --contiguous
@@ -46,22 +46,42 @@ export MASTER_ADDR=$master_addr
 echo "MASTER_ADDR="$MASTER_ADDR
 echo "Username="$USER
 
-#nccl variables
+# nccl variables
 export NCCL_DEBUG='INFO'
 export NCCL_DEBUG_SUBSYS='INIT,ENV,NET'
 export NCCL_IB_CUDA_SUPPORT=1
+
+# AllReduce should always use Tree
+export NCCL_ALGO='Tree'
 
 ### init virtual environment if needed
 # source /n/home02/emyang/.bashrc
 # source /n/idreos_lab/users/emyang/develop/initenv.sh
 
-### the command to run
+# benchmarking data directory
+out_dir="/n/home02/emyang/collective_benchmark/benchmark_results_$(date +"%Y%m%d")_$(date +"%H%M")"
+bw_out_dir="/n/home02/emyang/collective_benchmark/bandwidth_results_$(date +"%Y%m%d")_$(date +"%H%M")"
+coalescing_dir="/n/home02/emyang/collective_benchmark/coalescing_results_$(date +"%Y%m%d")_$(date +"%H%M")"
+
+### Collective benchmarking
 COLLECTIVES=("all_reduce" "reduce_scatter" "all_to_all" "broadcast" "reduce" "all_gather" "gather")
 for collective in ${COLLECTIVES[@]} 
 do
     echo $collective
-    srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --collective $collective --profile true
-    srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --collective $collective --async_op true --profile true
-    srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --collective $collective
-    srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --collective $collective --async_op true
+    srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective
+    srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective --async_op true
+    srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective --profile true
+    srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective --profile true --async_op true 
+done
+
+### Bandwidth benchmarking
+srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 bw_benchmark.py --out_dir ${bw_out_dir}
+python3 bw_calculate.py $WORLD_SIZE $bw_out_dir
+
+## Coalescing manager benchmarking
+COLLECTIVES=("all_reduce" "all_gather" "reduce_scatter")
+for collective in ${COLLECTIVES[@]} 
+do
+    srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 group_benchmark.py --out_dir ${coalescing_dir} --collective $collective
+    srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 group_benchmark.py --out_dir ${coalescing_dir} --coalesce true --collective $collective
 done

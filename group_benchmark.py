@@ -13,6 +13,7 @@ from enum import Enum, auto
 from torch.cuda import Event
 from typing import Tuple, Callable, Set, List, Optional
 
+
 class Collective(Enum):
     all_reduce = "all_reduce"
     all_gather = "all_gather"
@@ -203,7 +204,6 @@ class Task:
                 elapsed_times[discard_iters:]
             )
 
-
             self.rank0_print(
                 rank,
                 f"[Rank {rank}] time / coalesced all-gather ({args.num_to_coalesce} coalesced): {time_per_call:.5f} ms",
@@ -257,7 +257,11 @@ class Task:
         with _coalescing_manager(group=None, device=torch.device("cuda"), reqs=reqs):
             for i in range(args.num_to_coalesce):
                 input_args = self.coalesce_inputs(
-                    args.collective, dest_tensor, dest_tensor_ref, args.num_to_coalesce, i
+                    args.collective,
+                    dest_tensor,
+                    dest_tensor_ref,
+                    args.num_to_coalesce,
+                    i,
                 )
                 ret = collective_function(*input_args, async_op=True)
                 reqs.append(ret)
@@ -272,7 +276,14 @@ class Task:
         dest_tensor_ref: torch.Tensor,
     ):
         rank = dist.get_rank()
-        offsets = [0] + list(itertools.accumulate([dest_tensor_ref.size(dim=0) // self.world_size for _ in range(self.world_size)]))
+        offsets = [0] + list(
+            itertools.accumulate(
+                [
+                    dest_tensor_ref.size(dim=0) // self.world_size
+                    for _ in range(self.world_size)
+                ]
+            )
+        )
         src_tensor = dest_tensor_ref[offsets[rank] : offsets[rank + 1]]
 
         if args.collective == Collective.all_reduce:

@@ -230,7 +230,9 @@ class Task:
         )
         gather_list = (
             [
-                torch.empty([size], dtype=torch.int64, device=torch.cuda.current_device())
+                torch.empty(
+                    [size], dtype=torch.int64, device=torch.cuda.current_device()
+                )
                 for _ in range(self.world_size)
             ]
             if dist.get_rank() == 0
@@ -269,7 +271,7 @@ class Task:
         current_size = 0
         num_tasks = os.environ["WORLD_SIZE"]
         name = args.collective.__str__() + f"_{num_tasks}_{dist.get_rank()}"
-        delay_dir = f"{args.out_dir}/" + args.collective.__str__()
+        delay_dir = f"{args.out_dir}/{args.collective.__str__()}_{args.world_size}"
         Path(delay_dir).mkdir(parents=True, exist_ok=True)
         data_file = f"{delay_dir}/{name}"
         if args.async_op:
@@ -339,7 +341,7 @@ class Task:
 
         num_tasks = os.environ["WORLD_SIZE"]
         name = args.collective.__str__() + f"_{num_tasks}_{dist.get_rank()}"
-        delay_dir = f"{args.out_dir}/" + args.collective.__str__()
+        delay_dir = f"{args.out_dir}/{args.collective.__str__()}_{args.world_size}"
         Path(delay_dir).mkdir(parents=True, exist_ok=True)
         profile_file = f"{delay_dir}/{name}"
         if args.async_op:

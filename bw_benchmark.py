@@ -48,7 +48,7 @@ def parse_args():
     )
     parser.add_argument(
         "--out_dir",
-        default="/n/home02/emyang/collective_benchmark/coalescing_benchmark_results",
+        default="/n/home02/emyang/collective_benchmark/bandwidth_benchmark",
         type=str,
         help="output directory for benchmarking results",
     )
@@ -97,10 +97,10 @@ class Task:
         return "Success"
 
     def experiment(self, args):
-        Path("bw_results").mkdir(parents=True, exist_ok=True)
-        send_data_file = f"bw_results/bw_{dist.get_rank()}_send.data"
+        Path(args.out_dir).mkdir(parents=True, exist_ok=True)
+        send_data_file = f"{args.out_dir}/bw_{dist.get_rank()}_send.data"
         send_fout = open(send_data_file, "w")
-        recv_data_file = f"bw_results/bw_{dist.get_rank()}_recv.data"
+        recv_data_file = f"{args.out_dir}/bw_{dist.get_rank()}_recv.data"
         recv_fout = open(recv_data_file, "w")
 
         dist.barrier()
@@ -131,7 +131,7 @@ class Task:
             recv_fout.write(f"{size_in_mb}, {recv_list}\n")
 
             dist.barrier()
-    
+
     def send_recv_bench(self, args, data_size, warmup):
         send_times = [0 for _ in range(args.world_size)]
         recv_times = [0 for _ in range(args.world_size)]
@@ -148,7 +148,6 @@ class Task:
                         end.record()
                         torch.cuda.synchronize()
                         if not warmup:
-                            size_in_mb = (data_size * 4) // 2**20
                             send_times[i] = start.elapsed_time(end)
             else:
                 tensor = torch.empty(data_size, device=torch.device("cuda"))
@@ -159,12 +158,12 @@ class Task:
                 end.record()
                 torch.cuda.synchronize()
                 if not warmup:
-                    size_in_mb = (data_size * 4) // 2**20
                     recv_times[src_rank] = start.elapsed_time(end)
             dist.barrier()
 
         if not warmup:
             return (send_times, recv_times)
+
 
 if __name__ == "__main__":
     args = parse_args()
