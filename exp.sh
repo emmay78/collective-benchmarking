@@ -35,6 +35,7 @@ mkdir /n/holyscratch01/idreos_lab/Users/emyang/job_logs/${SLURM_JOB_ID}
 ### change WORLD_SIZE as gpus/node * num_nodes
 export MASTER_PORT=12340
 export WORLD_SIZE=8
+export NUM_NODES=2
 
 echo "JOB ID="${SLURM_JOB_ID}
 
@@ -76,7 +77,7 @@ done
 
 ### Bandwidth benchmarking
 srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 bw_benchmark.py --out_dir ${bw_out_dir}
-python3 bw_calculate.py $WORLD_SIZE $bw_out_dir
+python3 bw_calculate.py $WORLD_SIZE $NUM_NODES $bw_out_dir
 
 ## Coalescing manager benchmarking
 COLLECTIVES=("all_reduce" "all_gather" "reduce_scatter")
