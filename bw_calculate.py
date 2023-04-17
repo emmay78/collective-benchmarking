@@ -76,15 +76,17 @@ inter_max_times = df.groupby(["data_size"], group_keys=False).apply(
     lambda x: np.max(times_inter_node(x.drop(["data_size"], axis=1).to_numpy()))
 )
 inter_latency = inter_max_times.loc[np.min(np.unique(df["data_size"]))].item()
+print("Inter-node latency: ", inter_latency)
 inter_max_times = (inter_max_times - inter_latency)[1:]
 inter_bw = inter_max_times.index / inter_max_times
-inter_bw.to_csv(f"{bw_dir}/bw_inter.data", header=True)
+inter_bw.to_csv(f"{bw_dir}/bw_inter.data", header=False)
 
 ## Intra-node bandwidths
 intra_max_times = df.groupby(["data_size"], group_keys=False).apply(
     lambda x: np.max(times_intra_node(x.drop(["data_size"], axis=1).to_numpy()))
 )
 intra_latency = intra_max_times.loc[np.min(np.unique(df["data_size"]))].item()
+print("Intra-node latency: ", intra_latency)
 intra_max_times = (intra_max_times - intra_latency)[1:]
 intra_bw = intra_max_times.index / intra_max_times
 intra_bw.to_csv(f"{bw_dir}/bw_intra.data", header=False)

@@ -64,25 +64,25 @@ out_dir="/n/home02/emyang/collective_benchmark/benchmark_results_$(date +"%Y%m%d
 bw_out_dir="/n/home02/emyang/collective_benchmark/bandwidth_results_$(date +"%Y%m%d")_$(date +"%H%M")"
 coalescing_dir="/n/home02/emyang/collective_benchmark/coalescing_results_$(date +"%Y%m%d")_$(date +"%H%M")"
 
-### Collective benchmarking
-COLLECTIVES=("all_reduce" "reduce_scatter" "all_to_all" "broadcast" "reduce" "all_gather" "gather")
-for collective in ${COLLECTIVES[@]} 
-do
-    echo $collective
-    srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective
-    srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective --async_op true
-    srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective --profile true
-    srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective --profile true --async_op true 
-done
+# ### Collective benchmarking
+# COLLECTIVES=("all_reduce" "reduce_scatter" "all_to_all" "broadcast" "reduce" "all_gather" "gather")
+# for collective in ${COLLECTIVES[@]} 
+# do
+#     echo $collective
+#     srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective
+#     srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective --async_op true
+#     srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective --profile true
+#     srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective --profile true --async_op true 
+# done
 
 ### Bandwidth benchmarking
 srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 bw_benchmark.py --out_dir ${bw_out_dir}
-python3 bw_calculate.py $WORLD_SIZE $NUM_NODES $bw_out_dir
+# python3 bw_calculate.py $WORLD_SIZE $NUM_NODES $bw_out_dir
 
-## Coalescing manager benchmarking
-COLLECTIVES=("all_reduce" "all_gather" "reduce_scatter")
-for collective in ${COLLECTIVES[@]} 
-do
-    srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 group_benchmark.py --out_dir ${coalescing_dir} --collective $collective
-    srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 group_benchmark.py --out_dir ${coalescing_dir} --coalesce true --collective $collective
-done
+# ## Coalescing manager benchmarking
+# COLLECTIVES=("all_reduce" "all_gather" "reduce_scatter")
+# for collective in ${COLLECTIVES[@]} 
+# do
+#     srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 group_benchmark.py --out_dir ${coalescing_dir} --collective $collective
+#     srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 group_benchmark.py --out_dir ${coalescing_dir} --coalesce true --collective $collective
+# done

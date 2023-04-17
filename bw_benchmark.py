@@ -136,30 +136,33 @@ class Task:
         send_times = [0 for _ in range(args.world_size)]
         recv_times = [0 for _ in range(args.world_size)]
 
+        tensor = torch.randn(data_size, device=torch.device("cuda"))
+        in_tensor = torch.empty(data_size, device=torch.device("cuda"))
+
+        dist.barrier()
+
         for src_rank in range(args.world_size):
-            if src_rank == dist.get_rank():
-                tensor = torch.randn(data_size, device=torch.device("cuda"))
-                for i in range(args.world_size):
-                    if i != src_rank:
+            for dst_rank in range(args.world_size):
+                if src_rank != dst_rank:
+                    if src_rank == dist.get_rank():
                         start = torch.cuda.Event(enable_timing=True)
                         end = torch.cuda.Event(enable_timing=True)
                         start.record()
-                        dist.send(tensor, dst=i)
+                        dist.send(tensor, dst=dst_rank)
                         end.record()
                         torch.cuda.synchronize()
                         if not warmup:
-                            send_times[i] = start.elapsed_time(end)
-            else:
-                tensor = torch.empty(data_size, device=torch.device("cuda"))
-                start = torch.cuda.Event(enable_timing=True)
-                end = torch.cuda.Event(enable_timing=True)
-                start.record()
-                dist.recv(tensor, src=src_rank)
-                end.record()
-                torch.cuda.synchronize()
-                if not warmup:
-                    recv_times[src_rank] = start.elapsed_time(end)
-            dist.barrier()
+                            send_times[dst_rank] = start.elapsed_time(end)
+                    elif dst_rank == dist.get_rank():
+                        start = torch.cuda.Event(enable_timing=True)
+                        end = torch.cuda.Event(enable_timing=True)
+                        start.record()
+                        dist.recv(in_tensor, src=src_rank)
+                        end.record()
+                        torch.cuda.synchronize()
+                        if not warmup:
+                            recv_times[src_rank] = start.elapsed_time(end)
+                    dist.barrier()
 
         if not warmup:
             return (send_times, recv_times)
