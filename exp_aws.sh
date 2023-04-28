@@ -3,17 +3,17 @@
 ### This script submits a SLURM job for benchmark.py
 
 #SBATCH --job-name=nccl-benchmarking
-#SBATCH --partition=gpu_test
-#SBATCH --time=2:00:00
+#SBATCH --partition=train
+#SBATCH --time=12:00:00
 ### e.g. request 4 nodes with 1 gpu each, totally 4 gpus (WORLD_SIZE==4)
 ### Note: --gres=gpu:x should equal to ntasks-per-node
 ###SBATCH --contiguous
 ###SBATCH --constraint="holyhdr&a100"
 #SBATCH --nodes=2
-#SBATCH --ntasks-per-node=4
+#SBATCH --ntasks-per-node=8
 #SBATCH --gres=gpu:4
 ###SBATCH --gres=gpu:nvidia_a100-sxm4-80gb:4
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=12
 #SBATCH --mem=64gb
 ### chdir specifies the path of the main file that you want to run using srun i.e. the path of 'benchmark.py' in our case
 
