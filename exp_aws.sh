@@ -5,19 +5,14 @@
 #SBATCH --job-name=nccl-benchmarking
 #SBATCH --partition=train
 #SBATCH --time=12:00:00
-### e.g. request 4 nodes with 1 gpu each, totally 4 gpus (WORLD_SIZE==4)
-### Note: --gres=gpu:x should equal to ntasks-per-node
-###SBATCH --contiguous
-###SBATCH --constraint="holyhdr&a100"
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=8
-#SBATCH --gres=gpu:4
-###SBATCH --gres=gpu:nvidia_a100-sxm4-80gb:4
+#SBATCH --gres=gpu:8
 #SBATCH --cpus-per-task=12
-#SBATCH --mem=64gb
+#SBATCH --mem=320gb
 ### chdir specifies the path of the main file that you want to run using srun i.e. the path of 'benchmark.py' in our case
 
-#SBATCH --chdir=/n/home02/emyang/collective_benchmark
+#SBATCH --chdir=/data/home/sanketpurandare/collective-benchmarking
 
 ### create a folder 'logs' in the scratch space of our lab: /n/holyscratch01/idreos_lab/Users/<your-username>/logs
 ### %x - specifies job-name, %j - specifies job-number, %t - specifies task number
