@@ -253,8 +253,7 @@ class Task:
 
         from torch.distributed.distributed_c10d import _coalescing_manager
 
-        reqs = []
-        with _coalescing_manager(group=None, device=torch.device("cuda"), reqs=reqs):
+        with _coalescing_manager(group=None, device=torch.device("cuda"), async_ops=True) as cm:
             for i in range(args.num_to_coalesce):
                 input_args = self.coalesce_inputs(
                     args.collective,
@@ -264,10 +263,7 @@ class Task:
                     i,
                 )
                 ret = collective_function(*input_args, async_op=True)
-                reqs.append(ret)
-
-        for req in reqs:
-            req.wait()
+        cm.wait()
 
     def default_inputs(
         self,
