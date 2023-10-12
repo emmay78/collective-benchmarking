@@ -76,15 +76,15 @@ export NCCL_ALGO='Tree'
 # source /n/idreos_lab/users/emyang/develop/initenv.sh
 
 ### Collective benchmarking
-COLLECTIVES=("all_reduce" "reduce_scatter" "all_to_all" "broadcast" "reduce" "all_gather" "gather")
+# COLLECTIVES=("all_reduce" "reduce_scatter" "all_to_all" "broadcast" "reduce" "all_gather" "gather")
 COLLECTIVES=("all_reduce")
 for collective in ${COLLECTIVES[@]} 
 do
     echo $collective
-    srun --output ${JOB_DIR}/joblogs/%j_%t.out --error ${JOB_DIR}/joblogs/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective
-    srun --output ${JOB_DIR}/joblogs/%j_%t.out --error ${JOB_DIR}/joblogs/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective --async_op true
-    srun --output ${JOB_DIR}/joblogs/%j_%t.out --error ${JOB_DIR}/joblogs/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective --profile true
-    srun --output ${JOB_DIR}/joblogs/%j_%t.out --error ${JOB_DIR}/joblogs/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective --profile true --async_op true 
+    srun --output ${JOB_DIR}/joblogs/%j_%t.out --error ${JOB_DIR}/joblogs/%j_%t.err python3 benchmark.py --out_dir ${JOB_DIR}/collective --collective $collective
+    # srun --output ${JOB_DIR}/joblogs/%j_%t.out --error ${JOB_DIR}/joblogs/%j_%t.err python3 benchmark.py --out_dir ${JOB_DIR}/collective --collective $collective --async_op true
+    # srun --output ${JOB_DIR}/joblogs/%j_%t.out --error ${JOB_DIR}/joblogs/%j_%t.err python3 benchmark.py --out_dir ${JOB_DIR}/collective --collective $collective --profile true
+    # srun --output ${JOB_DIR}/joblogs/%j_%t.out --error ${JOB_DIR}/joblogs/%j_%t.err python3 benchmark.py --out_dir ${JOB_DIR}/collective --collective $collective --profile true --async_op true 
 done
 
 ### Bandwidth benchmarking
@@ -95,6 +95,6 @@ srun --output ${JOB_DIR}/joblogs/%j_%t_bw.out --error ${JOB_DIR}/joblogs/%j_%t_b
 # COLLECTIVES=("all_reduce" "all_gather" "reduce_scatter")
 # for collective in ${COLLECTIVES[@]} 
 # do
-#     srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 group_benchmark.py --out_dir ${coalescing_dir} --collective $collective
-#     srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 group_benchmark.py --out_dir ${coalescing_dir} --coalesce true --collective $collective
+#     srun --output ${JOB_DIR}/joblogs/%j_%t_coalesce.out --error ${JOB_DIR}/joblogs/%j_%t_coalesce.err python3 group_benchmark.py --out_dir ${JOB_DIR}/coalesce --collective $collective
+#     srun --output ${JOB_DIR}/joblogs/%j_%t_coalesce.out --error ${JOB_DIR}/joblogs/%j_%t_coalesce.err python3 group_benchmark.py --out_dir ${JOB_DIR}/coalesce --coalesce true --collective $collective
 # done
