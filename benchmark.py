@@ -171,24 +171,29 @@ class Task:
             return self.collective_wait
 
     def create_tensors_all_reduce(self, size: Tuple[int, ...]) -> Tuple[torch.Tensor]:
-        tensor = torch.randn(
-            size, dtype=torch.float32, device=torch.cuda.current_device()
+        tensor = (
+            torch.arange(size, dtype=torch.float32, device=torch.cuda.current_device())
+            + dist.get_rank() * size
         )
         return (tensor,)
 
     def create_tensors_reduce_scatter(
         self, size: Tuple[int, ...]
     ) -> Tuple[torch.Tensor]:
-        tensor_list = [
-            torch.zeros(size, dtype=torch.float32, device=torch.cuda.current_device())
-            for _ in range(self.world_size)
-        ]
-        tensor = (
-            torch.arange(size, dtype=torch.float32, device=torch.cuda.current_device())
-            + 1
+        tensor_in = (
+            torch.arange(
+                size * self.world_size,
+                dtype=torch.float32,
+                device=torch.cuda.current_device(),
+            )
             + size * self.world_size * dist.get_rank()
         )
-        return (tensor, tensor_list)
+
+        tensor_out = torch.zeros(
+            size, dtype=torch.float32, device=torch.cuda.current_device()
+        )
+
+        return (tensor_out, tensor_in)
 
     def create_tensors_all_to_all(self, size: Tuple[int, ...]) -> Tuple[torch.Tensor]:
         tensor_in = (
@@ -216,16 +221,16 @@ class Task:
         return (torch.randn(size, device=torch.cuda.current_device()), 0)
 
     def create_tensors_all_gather(self, size: Tuple[int, ...]) -> Tuple[torch.Tensor]:
-        tensor_list = [
-            torch.zeros(size, dtype=torch.float32, device=torch.cuda.current_device())
-            for _ in range(self.world_size)
-        ]
-        tensor = (
-            torch.arange(size, dtype=torch.float32, device=torch.cuda.current_device())
-            + 1
-            + size * self.world_size * dist.get_rank()
+        tensor_out = torch.zeros(
+            size * self.world_size,
+            dtype=torch.float32,
+            device=torch.cuda.current_device(),
         )
-        return (tensor_list, tensor)
+        tensor_in = (
+            torch.arange(size, dtype=torch.float32, device=torch.cuda.current_device())
+            + size * dist.get_rank()
+        )
+        return (tensor_out, tensor_in)
 
     def create_tensors_gather(self, size: Tuple[int, ...]) -> Tuple[torch.Tensor]:
         tensor = (
