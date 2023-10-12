@@ -87,7 +87,7 @@ def parse_args():
     )
     parser.add_argument(
         "--profile_size",
-        default=5 * (2**18),
+        default=5 * (2 ** 18),
         type=int,
         help="Data size for profile size.",
     )
@@ -161,7 +161,7 @@ class Task:
             elif collective_to_benchmark == Collective.reduce:
                 return dist.reduce
             elif collective_to_benchmark == Collective.all_gather:
-                return dist.all_gather
+                return dist.all_gather_into_tensor
             elif collective_to_benchmark == Collective.gather:
                 return dist.gather
         else:
@@ -179,11 +179,16 @@ class Task:
     def create_tensors_reduce_scatter(
         self, size: Tuple[int, ...]
     ) -> Tuple[torch.Tensor]:
-        tensor_in = torch.randn(size, device=torch.cuda.current_device())
-        tensor_out = torch.randn(
-            size * self.world_size, device=torch.cuda.current_device()
+        tensor_list = [
+            torch.zeros(size, dtype=torch.float32, device=torch.cuda.current_device())
+            for _ in range(self.world_size)
+        ]
+        tensor = (
+            torch.arange(size, dtype=torch.float32, device=torch.cuda.current_device())
+            + 1
+            + size * self.world_size * dist.get_rank()
         )
-        return (tensor_in, tensor_out)
+        return (tensor, tensor_list)
 
     def create_tensors_all_to_all(self, size: Tuple[int, ...]) -> Tuple[torch.Tensor]:
         tensor_in = (
@@ -258,9 +263,7 @@ class Task:
         elif collective_to_benchmark == Collective.gather:
             return self.create_tensors_gather
 
-    def get_number_of_tensors(
-        self, collective_to_benchmark: Collective
-    ) -> int:
+    def get_number_of_tensors(self, collective_to_benchmark: Collective) -> int:
         if collective_to_benchmark == Collective.all_reduce:
             return 1
         elif collective_to_benchmark == Collective.reduce_scatter:
@@ -279,7 +282,7 @@ class Task:
     def experiment(self, args):
         # Get total memory available on CUDA device
         total_mem = torch.cuda.get_device_properties(0).total_memory
-        total_mem -= 2 * (2**30) # subtract 2 GB
+        total_mem -= 2 * (2 ** 30)  # subtract 2 GB
 
         collective_function = self.get_collective_function(
             args.collective, async_op=args.async_op
@@ -288,7 +291,7 @@ class Task:
 
         warmup_iters = 10
         niters = 10
-        size = 5 * (2**18)  # Initial size is 5 MB
+        size = 5 * (2 ** 18)  # Initial size is 5 MB
 
         current_size = 0
         num_tasks = os.environ["WORLD_SIZE"]
@@ -311,15 +314,32 @@ class Task:
             else:
                 collective_function(*input_args)
 
-        for i in range(45):
-            if i == 20:
-                size = 20 * (2**18)
-            elif i == 30:
-                size = 50 * (2**18)
-            current_size += size
-            size_in_mb = (current_size * 4) // 2**20
+        # Construct data size range for benchmarking
+        data_sizes = []
+        # Exponential data sizes
+        for i in range(6, 29):
+            data_sizes.append(2 ** i)
 
-            if (current_size * 4) > (total_mem // get_number_of_tensors(args.collective)):
+        # Additional data sizes
+        for i in range(44):
+            if i == 2:
+                size = 512 * (2 ** 10)  # increments of 256 KB
+            elif i == 11:
+                size = 1 * (2 ** 20)  # increments of 1 MB
+            elif i == 26:
+                size = 10 * (2 ** 20)  # increments of 10 MB
+            elif i == 35:
+                size = 100 * (2 ** 20)  # increments of 100 MB
+            current_size += size
+            if current_size not in data_sizes:
+                data_sizes.append(current_size)
+
+        for size in data_sizes:
+            size_in_mb = size / 2 ** 20
+
+            if (current_size * 4) > (
+                total_mem // get_number_of_tensors(args.collective)
+            ):
                 break
 
             ##################################################################
@@ -335,7 +355,9 @@ class Task:
                 try:
                     input_args = create_args_function(current_size)
                 except torch.cuda.OutOfMemoryError:
-                    print("Ran out of CUDA memory creating tensor of size", current_size)
+                    print(
+                        "Ran out of CUDA memory creating tensor of size", current_size
+                    )
                 else:
                     events_pre[experiment_idx].record()
                     collective_function(*input_args)
@@ -381,11 +403,7 @@ class Task:
             profile_file += "_async"
         profile_fout = open(f"{profile_file}.profiler.data", "w")
 
-        schedule = torch.profiler.schedule(
-            wait=1,
-            warmup=5,
-            active=10,
-        )
+        schedule = torch.profiler.schedule(wait=1, warmup=5, active=10,)
 
         try:
             input_args = create_args_function(args.profile_size)
@@ -408,7 +426,7 @@ class Task:
 
         profile_fout.close()
         self.teardown()
-        size_in_mb = (args.profile_size * 4) // 2**20
+        size_in_mb = (args.profile_size * 4) // 2 ** 20
         return {"data_size": size_in_mb}
 
     def teardown(self):
