@@ -259,6 +259,10 @@ class Task:
             return self.create_tensors_gather
 
     def experiment(self, args):
+        # Get total memory available on CUDA device
+        total_mem = torch.cuda.get_device_properties(0).total_memory
+        total_mem -= 2 * (2**30) # subtract 2 GB
+
         collective_function = self.get_collective_function(
             args.collective, async_op=args.async_op
         )
@@ -282,8 +286,12 @@ class Task:
         # 1. warming up CUDACachingAllocator #
         ######################################
         for _ in range(warmup_iters):
-            input_args = create_args_function(size)
-            collective_function(*input_args)
+            try:
+                input_args = create_args_function(size)
+            except torch.cuda.OutOfMemoryError:
+                print("Ran out of CUDA memory during warm-up")
+            else:
+                collective_function(*input_args)
 
         for i in range(45):
             if i == 20:
@@ -292,6 +300,9 @@ class Task:
                 size = 50 * (2**18)
             current_size += size
             size_in_mb = (current_size * 4) // 2**20
+
+            if current_size > total_mem:
+                break
 
             ##################################################################
             # 2. measure raw delays and memory to rule out profiler overhead #
@@ -303,10 +314,15 @@ class Task:
             events_post = [Event(enable_timing=True) for _ in range(niters)]
 
             for experiment_idx in range(niters):
-                input_args = create_args_function(current_size)
-                events_pre[experiment_idx].record()
-                collective_function(*input_args)
-                events_post[experiment_idx].record()
+                try:
+                    input_args = create_args_function(current_size)
+                except torch.cuda.OutOfMemoryError:
+                    print("Ran out of CUDA memory creating tensor of size", current_size)
+                    break
+                else:
+                    events_pre[experiment_idx].record()
+                    collective_function(*input_args)
+                    events_post[experiment_idx].record()
 
             torch.cuda.synchronize()
 
@@ -354,17 +370,21 @@ class Task:
             active=10,
         )
 
-        input_args = create_args_function(args.profile_size)
-
-        with profile(
-            activities=[ProfilerActivity.CUDA],
-            record_shapes=True,
-            profile_memory=True,
-            schedule=schedule,
-        ) as prof:
-            for _ in range(15):
-                collective_function(*input_args)
-                prof.step()
+        try:
+            input_args = create_args_function(args.profile_size)
+        except torch.cuda.OutOfMemoryError:
+            print("Ran out of CUDA memory creating tensor of size", args.profile_size)
+            break
+        else:
+            with profile(
+                activities=[ProfilerActivity.CUDA],
+                record_shapes=True,
+                profile_memory=True,
+                schedule=schedule,
+            ) as prof:
+                for _ in range(15):
+                    collective_function(*input_args)
+                    prof.step()
 
         profile_fout.write(
             prof.key_averages().table(sort_by="cuda_time_total", row_limit=10)

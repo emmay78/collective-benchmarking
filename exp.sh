@@ -9,7 +9,7 @@
 ### Note: --gres=gpu:x should equal to ntasks-per-node
 ###SBATCH --contiguous
 ###SBATCH --constraint="holyhdr&a100"
-#SBATCH --nodes=2
+#SBATCH --nodes=1
 #SBATCH --ntasks-per-node=4
 #SBATCH --gres=gpu:4
 ###SBATCH --gres=gpu:nvidia_a100-sxm4-80gb:4
@@ -26,16 +26,28 @@
 #SBATCH --error=/n/holyscratch01/idreos_lab/Users/%u/job_logs/%x-%j.err
 #SBATCH --open-mode=append
 
+# Master directory for all logs
+LOG_DIR="/n/holyscratch01/idreos_lab/Users/emyang/job_logs"
+
 scontrol show job $SLURM_JOBID
 
+##### LOGGING CONFIGURATION #####
+JOB_DIR="${LOG_DIR}/$(date +"%Y%m%d")_$(date +"%H%M")"
+mkdir -p ${JOB_DIR}/{joblogs, collective, bandwidth, coalesce}
+
+# job_dir=${log_dir}/${job_creation_date_time}/${SLURM_JOB_ID}
+
 # create directory for logs for this SLURM job
-mkdir /n/holyscratch01/idreos_lab/Users/emyang/job_logs/${SLURM_JOB_ID}
+# mkdir -p ${job_dir}
 
 ### change 5-digit MASTER_PORT as you wish, slurm will raise Error if duplicated with others
 ### change WORLD_SIZE as gpus/node * num_nodes
 export MASTER_PORT=12340
-export WORLD_SIZE=8
-export NUM_NODES=2
+export WORLD_SIZE=$(scontrol show job $SLURM_JOBID | tr -s ' ' | cut -d ' ' -f 2 | awk '/TRES/ {print}' | rev | cut -d '=' -f 1 | rev)
+export NUM_NODES=$(scontrol show job $SLURM_JOBID | tr -s ' ' | cut -d ' ' -f 2 | awk '/NumNodes/ {print}' | cut -d '=' -f 2)
+
+echo "WORLD_SIZE="${WORLD_SIZE}
+echo "NUM_NODES="${NUM_NODES}
 
 echo "JOB ID="${SLURM_JOB_ID}
 
@@ -49,7 +61,7 @@ echo "Username="$USER
 
 # nccl variables
 export NCCL_DEBUG='INFO'
-export NCCL_DEBUG_SUBSYS='INIT,ENV,NET'
+export NCCL_DEBUG_SUBSYS='INIT,ENV,NET,TUNING'
 export NCCL_IB_CUDA_SUPPORT=1
 
 # AllReduce should always use Tree
@@ -66,17 +78,18 @@ coalescing_dir="/n/home02/emyang/collective_benchmark/coalescing_results_$(date 
 
 # ### Collective benchmarking
 # COLLECTIVES=("all_reduce" "reduce_scatter" "all_to_all" "broadcast" "reduce" "all_gather" "gather")
+# COLLECTIVES=("all_reduce")
 # for collective in ${COLLECTIVES[@]} 
 # do
 #     echo $collective
-#     srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective
-#     srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective --async_op true
-#     srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective --profile true
-#     srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective --profile true --async_op true 
+#     srun --output ${job_dir}/%j_%t.out python3 benchmark.py --out_dir ${out_dir} --collective $collective
+#     srun --output ${job_dir}/%j_%t.out --error ${job_dir}/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective --async_op true
+#     srun --output ${job_dir}/%j_%t.out --error ${job_dir}/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective --profile true
+#     srun --output ${job_dir}/%j_%t.out --error ${job_dir}/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective --profile true --async_op true 
 # done
 
 ### Bandwidth benchmarking
-srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 bw_benchmark.py --out_dir ${bw_out_dir}
+# srun --output /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.out --error /n/holyscratch01/idreos_lab/Users/%u/job_logs/%j/%j_%t.err python3 bw_benchmark.py --out_dir ${bw_out_dir}
 # python3 bw_calculate.py $WORLD_SIZE $NUM_NODES $bw_out_dir
 
 # ## Coalescing manager benchmarking
