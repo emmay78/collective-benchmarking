@@ -293,9 +293,9 @@ class Task:
         current_size = 0
         num_tasks = os.environ["WORLD_SIZE"]
         name = args.collective.__str__() + f"_{num_tasks}_{dist.get_rank()}"
-        delay_dir = f"{args.out_dir}/{args.collective.__str__()}_{args.world_size}"
-        Path(delay_dir).mkdir(parents=True, exist_ok=True)
-        data_file = f"{delay_dir}/{name}"
+        data_dir = f"{args.out_dir}/{args.collective.__str__()}_{args.world_size}"
+        Path(data_dir).mkdir(parents=True, exist_ok=True)
+        data_file = f"{data_dir}/{name}"
         if args.async_op:
             data_file += "_async"
         fout = open(f"{data_file}.data", "w")
@@ -374,9 +374,9 @@ class Task:
 
         num_tasks = os.environ["WORLD_SIZE"]
         name = args.collective.__str__() + f"_{num_tasks}_{dist.get_rank()}"
-        delay_dir = f"{args.out_dir}/{args.collective.__str__()}_{args.world_size}"
-        Path(delay_dir).mkdir(parents=True, exist_ok=True)
-        profile_file = f"{delay_dir}/{name}"
+        data_dir = f"{args.out_dir}/{args.collective.__str__()}_{args.world_size}"
+        Path(data_dir).mkdir(parents=True, exist_ok=True)
+        profile_file = f"{data_dir}/{name}"
         if args.async_op:
             profile_file += "_async"
         profile_fout = open(f"{profile_file}.profiler.data", "w")
