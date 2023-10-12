@@ -75,22 +75,17 @@ export NCCL_ALGO='Tree'
 # source /n/home02/emyang/.bashrc
 # source /n/idreos_lab/users/emyang/develop/initenv.sh
 
-# benchmarking data directory
-# out_dir="/n/home02/emyang/collective_benchmark/benchmark_results_$(date +"%Y%m%d")_$(date +"%H%M")"
-# bw_out_dir="/n/home02/emyang/collective_benchmark/bandwidth_results_$(date +"%Y%m%d")_$(date +"%H%M")"
-# coalescing_dir="/n/home02/emyang/collective_benchmark/coalescing_results_$(date +"%Y%m%d")_$(date +"%H%M")"
-
-# ### Collective benchmarking
-# COLLECTIVES=("all_reduce" "reduce_scatter" "all_to_all" "broadcast" "reduce" "all_gather" "gather")
-# COLLECTIVES=("all_reduce")
-# for collective in ${COLLECTIVES[@]} 
-# do
-#     echo $collective
-#     srun --output ${job_dir}/%j_%t.out --error ${job_dir}/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective
-#     srun --output ${job_dir}/%j_%t.out --error ${job_dir}/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective --async_op true
-#     srun --output ${job_dir}/%j_%t.out --error ${job_dir}/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective --profile true
-#     srun --output ${job_dir}/%j_%t.out --error ${job_dir}/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective --profile true --async_op true 
-# done
+### Collective benchmarking
+COLLECTIVES=("all_reduce" "reduce_scatter" "all_to_all" "broadcast" "reduce" "all_gather" "gather")
+COLLECTIVES=("all_reduce")
+for collective in ${COLLECTIVES[@]} 
+do
+    echo $collective
+    srun --output ${JOB_DIR}/joblogs/%j_%t.out --error ${JOB_DIR}/joblogs/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective
+    srun --output ${JOB_DIR}/joblogs/%j_%t.out --error ${JOB_DIR}/joblogs/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective --async_op true
+    srun --output ${JOB_DIR}/joblogs/%j_%t.out --error ${JOB_DIR}/joblogs/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective --profile true
+    srun --output ${JOB_DIR}/joblogs/%j_%t.out --error ${JOB_DIR}/joblogs/%j_%t.err python3 benchmark.py --out_dir ${out_dir} --collective $collective --profile true --async_op true 
+done
 
 ### Bandwidth benchmarking
 srun --output ${JOB_DIR}/joblogs/%j_%t_bw.out --error ${JOB_DIR}/joblogs/%j_%t_bw.err python3 bw_benchmark_two.py --out_dir ${JOB_DIR}/bandwidth

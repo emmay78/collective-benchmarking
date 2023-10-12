@@ -195,7 +195,7 @@ class Task:
         tensor_out = list(
             torch.empty(
                 [size * self.world_size],
-                dtype=torch.int64,
+                dtype=torch.float32,
                 device=torch.cuda.current_device(),
             ).chunk(self.world_size)
         )
@@ -212,11 +212,11 @@ class Task:
 
     def create_tensors_all_gather(self, size: Tuple[int, ...]) -> Tuple[torch.Tensor]:
         tensor_list = [
-            torch.zeros(size, dtype=torch.int64, device=torch.cuda.current_device())
+            torch.zeros(size, dtype=torch.float32, device=torch.cuda.current_device())
             for _ in range(self.world_size)
         ]
         tensor = (
-            torch.arange(size, dtype=torch.int64, device=torch.cuda.current_device())
+            torch.arange(size, dtype=torch.float32, device=torch.cuda.current_device())
             + 1
             + size * self.world_size * dist.get_rank()
         )
@@ -224,14 +224,14 @@ class Task:
 
     def create_tensors_gather(self, size: Tuple[int, ...]) -> Tuple[torch.Tensor]:
         tensor = (
-            torch.arange(size, dtype=torch.int64, device=torch.cuda.current_device())
+            torch.arange(size, dtype=torch.float32, device=torch.cuda.current_device())
             + 1
             + size * self.world_size * dist.get_rank()
         )
         gather_list = (
             [
                 torch.empty(
-                    [size], dtype=torch.int64, device=torch.cuda.current_device()
+                    [size], dtype=torch.float32, device=torch.cuda.current_device()
                 )
                 for _ in range(self.world_size)
             ]
