@@ -258,6 +258,24 @@ class Task:
         elif collective_to_benchmark == Collective.gather:
             return self.create_tensors_gather
 
+    def get_number_of_tensors(
+        self, collective_to_benchmark: Collective
+    ) -> int:
+        if collective_to_benchmark == Collective.all_reduce:
+            return 1
+        elif collective_to_benchmark == Collective.reduce_scatter:
+            return 2
+        elif collective_to_benchmark == Collective.all_to_all:
+            return 2
+        elif collective_to_benchmark == Collective.broadcast:
+            return 1
+        elif collective_to_benchmark == Collective.reduce:
+            return 1
+        elif collective_to_benchmark == Collective.all_gather:
+            return self.world_size + 1
+        elif collective_to_benchmark == Collective.gather:
+            return self.world_size + 1
+
     def experiment(self, args):
         # Get total memory available on CUDA device
         total_mem = torch.cuda.get_device_properties(0).total_memory
@@ -301,7 +319,7 @@ class Task:
             current_size += size
             size_in_mb = (current_size * 4) // 2**20
 
-            if current_size > total_mem:
+            if (current_size * 4) > (total_mem // get_number_of_tensors(args.collective)):
                 break
 
             ##################################################################

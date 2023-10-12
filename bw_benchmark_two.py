@@ -115,34 +115,31 @@ class Task:
         latency = self.send_recv_bench(args, 1)
         fout.write(f"0, {latency}\n")
 
-        LOG_SCALE = False
+        # Construct data size range for benchmarking
+        data_sizes = []
+        # Exponential data sizes
+        for i in range(6, 29):
+            data_sizes.append(2**i)
 
-        if LOG_SCALE:
-            for i in range(6, 29):
-                current_size = 2**i
+        # Additional data sizes
+        for i in range(34):
+            if i == 2:
+                size = 512 * (2**10) # increments of 256 KB
+            elif i == 11:
+                size = 1 * (2**20) # increments of 1 MB
+            elif i == 26:
+                size = 10 * (2**20) # increments of 10 MB
+            current_size += size
+            if current_size not in data_sizes:
+                data_sizes.append(current_size)
 
-                size_in_mb = current_size / 2**20
+        for size in data_sizes:
+            size_in_mb = size / 2**20
 
-                time = self.send_recv_bench(args, current_size // 4)
-                fout.write(f"{size_in_mb}, {time}\n")
+            time = self.send_recv_bench(args, size // 4)
+            fout.write(f"{size_in_mb}, {time}\n")
 
-                dist.barrier()
-        else:
-            for i in range(34):
-                if i == 2:
-                    size = 512 * (2**10) # increments of 256 KB
-                elif i == 11:
-                    size = 1 * (2**20) # increments of 1 MB
-                elif i == 26:
-                    size = 10 * (2**20) # increments of 10 MB
-                current_size += size
-
-                size_in_mb = current_size / 2**20
-
-                time = self.send_recv_bench(args, current_size // 4)
-                fout.write(f"{size_in_mb}, {time}\n")
-
-                dist.barrier()
+            dist.barrier()
 
         fout.close()
 
@@ -156,6 +153,7 @@ class Task:
         src_rank = 0
         dst_rank = 1
 
+        # Average over three trials
         niters = 3
         times = [0 for _ in range(niters)]
 
