@@ -338,7 +338,7 @@ class Task:
             size_in_mb = size / 2 ** 20
 
             if (current_size * 4) > (
-                total_mem // get_number_of_tensors(args.collective)
+                total_mem // self.get_number_of_tensors(args.collective)
             ):
                 break
 
