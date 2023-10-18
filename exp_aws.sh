@@ -6,25 +6,25 @@
 #SBATCH --partition=train
 #SBATCH --time=2:00:00
 #SBATCH --exclusive
-#SBATCH --nodes=2
+#SBATCH --export=ALL
 #SBATCH --ntasks-per-node=8
 #SBATCH --gres=gpu:8
 #SBATCH --cpus-per-task=12
 ### chdir specifies the path of the main file that you want to run using srun i.e. the path of 'benchmark.py' in our case
-#SBATCH --chdir=/fsx/users/%u/collective-benchmarking
+#SBATCH --chdir=/fsx/users/sanketpurandare/collective-benchmarking
 
 ### %x - specifies job-name, %j - specifies job-number, %t - specifies task number
 
-#SBATCH --output=/fsx/users/%u/job_logs/%x-%j.out
-#SBATCH --error=/fsx/users/%u/job_logs/%x-%j.err
+#SBATCH --output=/fsx/users/sanketpurandare/job_logs/%x-%j.out
+#SBATCH --error=/fsx/users/sanketpurandare/job_logs/%x-%j.err
 #SBATCH --open-mode=append
 
-LOG_DIR="/fsx/users/%u/job_logs"
+LOG_DIR="/fsx/users/sanketpurandare/job_logs"
 
 scontrol show job $SLURM_JOBID
 
 JOB_DIR="${LOG_DIR}/$(date +"%Y%m%d")_$(date +"%H%M")"
-mkdir -p ${JOB_DIR}/{joblogs, collective, bandwidth, coalesce, init}
+mkdir -p ${JOB_DIR}/{joblogs,collective,bandwidth,coalesce,init}
 
 
 ### change 5-digit MASTER_PORT as you wish, slurm will raise Error if duplicated with others
@@ -54,18 +54,25 @@ export NCCL_ALGO='Tree'
 export NCCL_TUNING_FILE=${JOB_DIR}/init/tuning.data
 
 ### init virtual environment if needed
-# source /data/home/%u/.bashrc
-source /fsx/users/%u/initenv.sh
+# source ~/.bashrc
+# export PATH=/fsx/users/sanketpurandare/conda/bin:$PATH
+# export MODULEPATH=/opt/slurm/etc/files/modulesfiles:/usr/share/modules/modulefiles:/opt/modulefiles:
+# conda activate torchsrc
+# module load cuda/12.1
+# module load libfabric-aws/1.18.1
+# export LD_LIBRARY_PATH=/data/home/sanketpurandare/cluster/conda/envs/torchsrc/lib:$LD_LIBRARY_PATH
+# export LD_LIBRARY_PATH=/data/home/sanketpurandare/cluster/aws-ofi-nccl/lib/:$LD_LIBRARY_PATH
+# export LD_LIBRARY_PATH=/opt/amazon/efa/lib:$LD_LIBRARY_PATH 
 
 
 ### Collective benchmarking
-# COLLECTIVES=("all_reduce" "reduce_scatter" "all_gather")
-COLLECTIVES=("all_reduce")
+COLLECTIVES=("all_reduce" "reduce_scatter" "all_gather")
+# COLLECTIVES=("all_reduce")
 for collective in ${COLLECTIVES[@]} 
 do
     echo $collective
     srun --output ${JOB_DIR}/joblogs/%j_%t.out --error ${JOB_DIR}/joblogs/%j_%t.err python3 benchmark.py --out_dir ${JOB_DIR}/collective --collective $collective
-    srun --output ${JOB_DIR}/joblogs/%j_%t.out --error ${JOB_DIR}/joblogs/%j_%t.err python3 benchmark.py --out_dir ${JOB_DIR}/collective --collective $collective --async_op true
+    # srun --output ${JOB_DIR}/joblogs/%j_%t.out --error ${JOB_DIR}/joblogs/%j_%t.err python3 benchmark.py --out_dir ${JOB_DIR}/collective --collective $collective --async_op true
     # srun --output ${JOB_DIR}/joblogs/%j_%t.out --error ${JOB_DIR}/joblogs/%j_%t.err python3 benchmark.py --out_dir ${JOB_DIR}/collective --collective $collective --profile true
     # srun --output ${JOB_DIR}/joblogs/%j_%t.out --error ${JOB_DIR}/joblogs/%j_%t.err python3 benchmark.py --out_dir ${JOB_DIR}/collective --collective $collective --profile true --async_op true 
 done

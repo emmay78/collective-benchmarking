@@ -186,7 +186,6 @@ class Task:
                 dtype=torch.float32,
                 device=torch.cuda.current_device(),
             )
-            + size * self.world_size * dist.get_rank()
         )
 
         tensor_out = torch.zeros(
@@ -272,7 +271,7 @@ class Task:
         if collective_to_benchmark == Collective.all_reduce:
             return 1
         elif collective_to_benchmark == Collective.reduce_scatter:
-            return 2
+            return self.world_size + 1
         elif collective_to_benchmark == Collective.all_to_all:
             return 2
         elif collective_to_benchmark == Collective.broadcast:
@@ -294,9 +293,9 @@ class Task:
         )
         create_args_function = self.get_create_tensor_function(args.collective)
 
-        warmup_iters = 10
-        niters = 10
-        size = 5 * (2 ** 18)  # Initial size is 5 MB
+        warmup_iters = 2
+        niters = 11
+        size = 100 * (2 ** 10)  # Initial size is 100 KB
 
         current_size = 0
         num_tasks = os.environ["WORLD_SIZE"]
@@ -308,30 +307,21 @@ class Task:
             data_file += "_async"
         fout = open(f"{data_file}.data", "w")
 
-        ######################################
-        # 1. warming up CUDACachingAllocator #
-        ######################################
-        for _ in range(warmup_iters):
-            try:
-                input_args = create_args_function(size)
-            except torch.cuda.OutOfMemoryError:
-                print("Ran out of CUDA memory during warm-up")
-            else:
-                collective_function(*input_args)
+
 
         # Construct data size range for benchmarking
         data_sizes = []
         # Exponential data sizes
-        for i in range(6, 29):
+        for i in range(6, 31):
             data_sizes.append(2 ** i)
 
         # Additional data sizes
         for i in range(44):
-            if i == 2:
-                size = 512 * (2 ** 10)  # increments of 256 KB
-            elif i == 11:
+            if i == 1:
+                size = 100 * (2 ** 10)  # increments of 100 KB
+            elif i == 10:
                 size = 1 * (2 ** 20)  # increments of 1 MB
-            elif i == 26:
+            elif i == 25:
                 size = 10 * (2 ** 20)  # increments of 10 MB
             elif i == 35:
                 size = 100 * (2 ** 20)  # increments of 100 MB
@@ -339,31 +329,34 @@ class Task:
             if current_size not in data_sizes:
                 data_sizes.append(current_size)
 
+        data_sizes.sort()
+
         for size in data_sizes:
             size_in_mb = size / 2 ** 20
 
-            if (current_size * 4) > (
+            if size > (
                 total_mem // self.get_number_of_tensors(args.collective)
             ):
                 break
+            try:
+                input_args = create_args_function(size // 4)
+            except torch.cuda.OutOfMemoryError:
+                print("Ran out of CUDA memory during warm-up")
+            ######################################
+            # 1. warming up CUDACachingAllocator #
+            ######################################
+            for _ in range(warmup_iters):
 
+                collective_function(*input_args)
+                torch.cuda.synchronize()
             ##################################################################
             # 2. measure raw delays and memory to rule out profiler overhead #
             ##################################################################
-            if i == 0:
-                niters += 2
 
             events_pre = [Event(enable_timing=True) for _ in range(niters)]
             events_post = [Event(enable_timing=True) for _ in range(niters)]
 
             for experiment_idx in range(niters):
-                try:
-                    input_args = create_args_function(current_size)
-                except torch.cuda.OutOfMemoryError:
-                    print(
-                        "Ran out of CUDA memory creating tensor of size", current_size
-                    )
-                else:
                     events_pre[experiment_idx].record()
                     collective_function(*input_args)
                     events_post[experiment_idx].record()
@@ -373,13 +366,8 @@ class Task:
             delays = [
                 pre.elapsed_time(post) for pre, post in zip(events_pre, events_post)
             ]
-
-            # The first experiment has a much larger CUDA time than all other experiments.
-            # Thus, we discard the first two measurements.
-            if i == 0:
-                delays = delays[2:]
-                niters -= 2
-
+            #discard first experiment run
+            delays = delays[1:]
             # write results
             for delay in delays:
                 fout.write(f"{size_in_mb}, {delay:.4f}\n")
