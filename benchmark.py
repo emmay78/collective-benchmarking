@@ -112,18 +112,22 @@ class Task:
     def __call__(self, args: Any) -> Any:
 
         print_env()
-        print(args)
+
 
         if "WORLD_SIZE" in os.environ:
             args.world_size = int(os.environ["WORLD_SIZE"])
             self.world_size = args.world_size
+            self.ngpus_per_node = int(os.environ["SLURM_NTASKS_PER_NODE"])
 
         args.distributed = args.world_size > 1
-        ngpus_per_node = torch.cuda.device_count()
+       
 
         if "SLURM_PROCID" in os.environ:
             args.global_rank = int(os.environ["SLURM_PROCID"])
-            args.local_rank = args.global_rank % ngpus_per_node
+            args.local_rank = args.global_rank % self.ngpus_per_node
+            print(args)
+            print("Number of GPUs per node: ", self.ngpus_per_node)
+            print("Number of GPUs actually on this node:", torch.cuda.device_count())
 
             dist.init_process_group(
                 backend=args.dist_backend,

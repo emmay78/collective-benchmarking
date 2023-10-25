@@ -6,7 +6,6 @@
 #SBATCH --partition=train
 #SBATCH --time=2:00:00
 #SBATCH --exclusive
-#SBATCH --export=ALL
 #SBATCH --ntasks-per-node=8
 #SBATCH --gres=gpu:8
 #SBATCH --cpus-per-task=12
@@ -23,8 +22,8 @@ LOG_DIR="/fsx/users/sanketpurandare/job_logs"
 
 scontrol show job $SLURM_JOBID
 
-JOB_DIR="${LOG_DIR}/C2_$(date +"%Y%m%d")_$(date +"%H%M")"
-mkdir -p ${JOB_DIR}/{joblogs,collective,bandwidth,coalesce,init}
+JOB_DIR="${LOG_DIR}/BW_C3_$(date +"%Y%m%d")_$(date +"%H%M")"
+mkdir -p ${JOB_DIR}/{joblogs,bandwidth,init}
 
 
 ### change 5-digit MASTER_PORT as you wish, slurm will raise Error if duplicated with others
@@ -43,43 +42,21 @@ export MASTER_ADDR=$master_addr
 echo "MASTER_ADDR="$MASTER_ADDR
 echo "Username="$USER
 # nccl variables
-
 export NCCL_DEBUG='INFO'
 export NCCL_DEBUG_SUBSYS='INIT,COLL,P2P,ENV,NET,TUNING,GRAPH'
 export NCCL_IB_CUDA_SUPPORT=1
+# export NCCL_SOCKET_IFNAME=ens
 export FI_PROVIDER="efa"
 export FI_EFA_USE_DEVICE_RDMA=1
 # AllReduce should always use Tree
 export NCCL_ALGO='Tree'
+
 C1=131072
 C2=1048576
 C3=8388608
-export NCCL_P2P_NET_CHUNKSIZE=${C2}
+
+export NCCL_P2P_NET_CHUNKSIZE=${C3}
 export NCCL_BUFFSIZE=`expr ${NCCL_P2P_NET_CHUNKSIZE} \* 32`
 export NCCL_TUNING_FILE=${JOB_DIR}/init/tuning.data
 
-
-### Collective benchmarking
-COLLECTIVES=("all_reduce" "reduce_scatter" "all_gather")
-# COLLECTIVES=("all_reduce")
-for collective in ${COLLECTIVES[@]} 
-do
-    echo $collective
-    srun --output ${JOB_DIR}/joblogs/%j_%t.out --error ${JOB_DIR}/joblogs/%j_%t.err python3 benchmark.py --out_dir ${JOB_DIR}/collective --collective $collective
-    # srun --output ${JOB_DIR}/joblogs/%j_%t.out --error ${JOB_DIR}/joblogs/%j_%t.err python3 benchmark.py --out_dir ${JOB_DIR}/collective --collective $collective --async_op true
-    # srun --output ${JOB_DIR}/joblogs/%j_%t.out --error ${JOB_DIR}/joblogs/%j_%t.err python3 benchmark.py --out_dir ${JOB_DIR}/collective --collective $collective --profile true
-    # srun --output ${JOB_DIR}/joblogs/%j_%t.out --error ${JOB_DIR}/joblogs/%j_%t.err python3 benchmark.py --out_dir ${JOB_DIR}/collective --collective $collective --profile true --async_op true 
-done
-
-### Bandwidth benchmarking
-# echo "Bandwidh Benchmarking"
-# srun --output ${JOB_DIR}/joblogs/%j_%t_bw.out --error ${JOB_DIR}/joblogs/%j_%t_bw.err python3 bw_benchmark_two.py --out_dir ${JOB_DIR}/bandwidth
-# python3 bw_calculate.py $WORLD_SIZE $NUM_NODES $bw_out_dir
-
-# ## Coalescing manager benchmarking
-# COLLECTIVES=("all_reduce" "all_gather" "reduce_scatter")
-# for collective in ${COLLECTIVES[@]} 
-# do
-#     srun --output ${JOB_DIR}/joblogs/%j_%t.out --error ${JOB_DIR}/joblogs/%j_%t.err python3 group_benchmark.py --out_dir ${JOB_DIR}/coalesce --collective $collective
-#     srun --output ${JOB_DIR}/joblogs/%j_%t.out --error ${JOB_DIR}/joblogs/%j_%t.err python3 group_benchmark.py --out_dir ${JOB_DIR}/coalesce --coalesce true --collective $collective
-# done
+srun --output ${JOB_DIR}/joblogs/%j_%t.out --error ${JOB_DIR}/joblogs/%j_%t.err python3 bw_benchmark_two.py --out_dir ${JOB_DIR}/bandwidth

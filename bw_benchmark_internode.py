@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import torch
+from torch.distributed._tensor import init_device_mesh
 import argparse
 import torch.distributed as dist
 from functools import partial
@@ -61,6 +62,7 @@ def print_env():
     print("Master Addr: ", os.environ["MASTER_ADDR"])
     print("Master Port:", os.environ["MASTER_PORT"])
     print("Slurm Procid: ", os.environ["SLURM_PROCID"])
+    print("Visible Cuda Devices: ", os.environ["CUDA_VISIBLE_DEVICES"])
 
 
 class Task:
@@ -74,28 +76,33 @@ class Task:
         if "WORLD_SIZE" in os.environ:
             args.world_size = int(os.environ["WORLD_SIZE"])
             self.world_size = args.world_size
-            self.ngpus_per_node = int(os.environ["SLURM_NTASKS_PER_NODE"])
-
 
         args.distributed = args.world_size > 1
 
         if "SLURM_PROCID" in os.environ:
             args.global_rank = int(os.environ["SLURM_PROCID"])
+            self.ngpus_per_node = int(os.environ["SLURM_NTASKS_PER_NODE"])
             args.local_rank = args.global_rank % self.ngpus_per_node
             print(args)
             print("Number of GPUs per node: ", self.ngpus_per_node)
-            print("Number of GPUs actually on this node:", torch.cuda.device_count())
+            print("NUmber of GPUs on this node:", torch.cuda.device_count())
 
             dist.init_process_group(
                 backend=args.dist_backend,
                 init_method=args.dist_url,
-                world_size=args.world_size,
+                world_size=self.world_size,
                 rank=args.global_rank,
             )
+            self.inter_node_pg = [None for _ in range(self.ngpus_per_node)]
+
+            for i in range(self.ngpus_per_node):
+                inter_pg = dist.new_group(ranks=[i, i+self.ngpus_per_node], backend=args.dist_backend)
+                self.inter_node_pg[i] = inter_pg
+            print(self.inter_node_pg)
             torch.cuda.set_device(args.local_rank)
-            self.experiment(args)
-            return "Success"
-        return "Failed"
+
+        self.experiment(args)
+        return "Success"
 
     def experiment(self, args):
         Path(args.out_dir).mkdir(parents=True, exist_ok=True)
@@ -104,10 +111,6 @@ class Task:
         
         current_size = 0
         size = 100 * (2 ** 10)  # Initial size is 100 KB
-
-        # Measure latency by sending a 2-element tensor
-        latency = self.send_recv_bench(args, 2**6)
-        fout.write(f"0, {latency}\n")
 
         # Construct data size range for benchmarking
         data_sizes = []
@@ -133,47 +136,37 @@ class Task:
         for size in data_sizes:
             size_in_mb = size / 2**20
 
-            time = self.send_recv_bench(args, size // (4 * self.world_size//2))
+            time = self.all_gather_bench(args, size // (4 * self.world_size))
             fout.write(f"{size_in_mb}, {time}\n")
-
 
         fout.close()
 
-    def send_recv_bench(self, args, data_size):
+    def all_gather_bench(self, args, data_size):
+        local_pg_size = len(dist.get_process_group_ranks(self.inter_node_pg[args.local_rank]))
+        print(local_pg_size)
+        assert( local_pg_size == 2)
+        tensor_in = torch.randn(data_size, dtype= torch.float32, device=torch.cuda.current_device()) 
+        tensor_out = torch.zeros((data_size * 2), dtype= torch.float32, device=torch.cuda.current_device())
 
-        tensor = torch.randn(data_size, dtype= torch.float32, device=torch.cuda.current_device())
-        in_tensor = torch.empty(data_size, dtype= torch.float32, device=torch.cuda.current_device())
-
-        dist.barrier()
-        src_rank = [i for i in range(self.world_size//2)]
-        dst_rank = [i for i in range(self.world_size//2,self.world_size)]
-        rank = dist.get_rank()
-        print(f"Source rank: {src_rank} \t Dest rank: {dst_rank}")
-        print(f"Data Size: {data_size} \t Current Rank: {rank}")
-        # Average over three trials
         niters = 4
-        times = [0 for _ in range(niters)]
         events_pre = [Event(enable_timing=True) for _ in range(niters)]
         events_post = [Event(enable_timing=True) for _ in range(niters)]
 
-
         for i in range(niters):
-            if rank in src_rank :
-                events_pre[i].record()
-                dist.send(tensor, dst=dst_rank[rank])
-                events_post[i].record()
-            elif rank in dst_rank:
-                events_pre[i].record()
-                dist.recv(in_tensor, src=src_rank[(rank-self.world_size//2)])          
-                events_post[i].record()
+            events_pre[i].record()
+            dist.all_gather_into_tensor(tensor_out, tensor_in, group=self.inter_node_pg[args.local_rank])
+            events_post[i].record()
 
         torch.cuda.synchronize()
+        
         times = [
-            pre.elapsed_time(post) for pre, post in zip(events_pre, events_post)
-        ]
+                pre.elapsed_time(post) for pre, post in zip(events_pre, events_post)
+            ]
+        
         times = times[1:]
 
-        return sum(times)/niters
+        return sum(times)/(niters-1)
+
 
 
 if __name__ == "__main__":
