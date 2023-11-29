@@ -23,7 +23,7 @@ LOG_DIR="/fsx/users/sanketpurandare/job_logs"
 
 scontrol show job $SLURM_JOBID
 
-JOB_DIR="${LOG_DIR}/C2_$(date +"%Y%m%d")_$(date +"%H%M")"
+JOB_DIR="${LOG_DIR}/C3_$(date +"%Y%m%d")_$(date +"%H%M")"
 mkdir -p ${JOB_DIR}/{joblogs,collective,bandwidth,coalesce,init}
 
 
@@ -54,13 +54,13 @@ export NCCL_ALGO='Tree'
 C1=131072
 C2=1048576
 C3=8388608
-export NCCL_P2P_NET_CHUNKSIZE=${C2}
+export NCCL_P2P_NET_CHUNKSIZE=${C3}
 export NCCL_BUFFSIZE=`expr ${NCCL_P2P_NET_CHUNKSIZE} \* 32`
 export NCCL_TUNING_FILE=${JOB_DIR}/init/tuning.data
 
 
 ### Collective benchmarking
-COLLECTIVES=("all_reduce" "reduce_scatter" "all_gather")
+COLLECTIVES=("reduce_scatter" "all_gather")
 # COLLECTIVES=("all_reduce")
 for collective in ${COLLECTIVES[@]} 
 do

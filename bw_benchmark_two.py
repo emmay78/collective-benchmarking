@@ -106,11 +106,12 @@ class Task:
         size = 100 * (2 ** 10)  # Initial size is 100 KB
 
         # Measure latency by sending a 2-element tensor
-        latency = self.send_recv_bench(args, 2**6)
-        fout.write(f"0, {latency}\n")
+        # latency = self.send_recv_bench(args, 1)
+        # fout.write(f"0, {latency}\n")
 
         # Construct data size range for benchmarking
         data_sizes = []
+        data_sizes.append(2 * self.world_size)
         # Exponential data sizes
         for i in range(6, 31):
             data_sizes.append(2 ** i)
@@ -133,9 +134,9 @@ class Task:
         for size in data_sizes:
             size_in_mb = size / 2**20
 
-            time = self.send_recv_bench(args, size // (4 * self.world_size//2))
-            fout.write(f"{size_in_mb}, {time}\n")
-
+            times = self.send_recv_bench(args, size // (4 * self.world_size//2))
+            for time in times:
+                fout.write(f"{size_in_mb}, {time}\n")
 
         fout.close()
 
@@ -151,7 +152,7 @@ class Task:
         print(f"Source rank: {src_rank} \t Dest rank: {dst_rank}")
         print(f"Data Size: {data_size} \t Current Rank: {rank}")
         # Average over three trials
-        niters = 4
+        niters = 6
         times = [0 for _ in range(niters)]
         events_pre = [Event(enable_timing=True) for _ in range(niters)]
         events_post = [Event(enable_timing=True) for _ in range(niters)]
@@ -173,7 +174,7 @@ class Task:
         ]
         times = times[1:]
 
-        return sum(times)/niters
+        return times
 
 
 if __name__ == "__main__":

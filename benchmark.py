@@ -184,17 +184,9 @@ class Task:
     def create_tensors_reduce_scatter(
         self, size: Tuple[int, ...]
     ) -> Tuple[torch.Tensor]:
-        tensor_in = (
-            torch.arange(
-                size * self.world_size,
-                dtype=torch.float32,
-                device=torch.cuda.current_device(),
-            )
-        )
-
-        tensor_out = torch.zeros(
-            size, dtype=torch.float32, device=torch.cuda.current_device()
-        )
+        tensor_in:torch.Tensor = torch.arange(size, dtype=torch.float32, device=torch.cuda.current_device())
+        chunks = torch.chunk(tensor_in, self.world_size, dim=0)
+        tensor_out:torch.Tensor = chunks[dist.get_rank()].clone()
 
         return (tensor_out, tensor_in)
 
@@ -224,15 +216,9 @@ class Task:
         return (torch.randn(size, device=torch.cuda.current_device()), 0)
 
     def create_tensors_all_gather(self, size: Tuple[int, ...]) -> Tuple[torch.Tensor]:
-        tensor_out = torch.zeros(
-            size * self.world_size,
-            dtype=torch.float32,
-            device=torch.cuda.current_device(),
-        )
-        tensor_in = (
-            torch.arange(size, dtype=torch.float32, device=torch.cuda.current_device())
-            + size * dist.get_rank()
-        )
+        tensor_out:torch.Tensor = torch.arange(size, dtype=torch.float32, device=torch.cuda.current_device())
+        chunks = torch.chunk(tensor_out, self.world_size, dim=0)
+        tensor_in:torch.Tensor = chunks[dist.get_rank()].clone()
         return (tensor_out, tensor_in)
 
     def create_tensors_gather(self, size: Tuple[int, ...]) -> Tuple[torch.Tensor]:
@@ -275,7 +261,7 @@ class Task:
         if collective_to_benchmark == Collective.all_reduce:
             return 1
         elif collective_to_benchmark == Collective.reduce_scatter:
-            return self.world_size + 1
+            return 2
         elif collective_to_benchmark == Collective.all_to_all:
             return 2
         elif collective_to_benchmark == Collective.broadcast:
@@ -283,7 +269,7 @@ class Task:
         elif collective_to_benchmark == Collective.reduce:
             return 1
         elif collective_to_benchmark == Collective.all_gather:
-            return self.world_size + 1
+            return 2
         elif collective_to_benchmark == Collective.gather:
             return self.world_size + 1
 
@@ -299,7 +285,7 @@ class Task:
 
         warmup_iters = 2
         niters = 11
-        size = 100 * (2 ** 10)  # Initial size is 100 KB
+        size = 15 * (2 ** 10)  # Initial size is 15 KB
 
         current_size = 0
         num_tasks = os.environ["WORLD_SIZE"]
@@ -316,25 +302,25 @@ class Task:
         # Construct data size range for benchmarking
         data_sizes = []
         # Exponential data sizes
-        for i in range(6, 31):
-            data_sizes.append(2 ** i)
+        for i in range(10, 30):
+            data_sizes.append((2 ** i) * 15)
 
         # Additional data sizes
         for i in range(44):
             if i == 1:
-                size = 100 * (2 ** 10)  # increments of 100 KB
+                size = 90 * (2 ** 10)  # increments of 90 KB
             elif i == 10:
-                size = 1 * (2 ** 20)  # increments of 1 MB
+                size = 15 * (2 ** 16)  # increments of ~1 MB
             elif i == 25:
-                size = 10 * (2 ** 20)  # increments of 10 MB
+                size = 15 * (2 ** 20)  # increments of 15 MB
             elif i == 35:
-                size = 100 * (2 ** 20)  # increments of 100 MB
+                size = 90 * (2 ** 20)  # increments of 90 MB
             current_size += size
             if current_size not in data_sizes:
                 data_sizes.append(current_size)
 
         data_sizes.sort()
-
+        
         for size in data_sizes:
             size_in_mb = size / 2 ** 20
 
