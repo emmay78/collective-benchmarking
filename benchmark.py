@@ -4,13 +4,29 @@ import time
 import torch
 import argparse
 import torch.distributed as dist
+from datetime import timedelta
 from functools import partial
+from torch.distributed.device_mesh import init_device_mesh
 from torch.profiler import profile, record_function, ProfilerActivity, schedule
 from pathlib import Path
-from typing import Any
 from enum import Enum, auto
 from torch.cuda import Event
-from typing import Tuple, Callable
+from typing import Any, List, Tuple, Callable
+import logging
+
+
+logger = logging.getLogger()
+
+
+def init_logger():
+    logger.setLevel(logging.DEBUG)
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.DEBUG)
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
 
 
 class Collective(Enum):
@@ -50,6 +66,12 @@ def parse_args():
         help="global node rank for distributed training",
     )
     parser.add_argument(
+        "--gpus_per_node",
+        default=8,
+        type=int,
+        help="Number of GPUs per node",
+    )
+    parser.add_argument(
         "--dist_url",
         default="env://",
         type=str,
@@ -62,12 +84,6 @@ def parse_args():
         "--local_rank", default=-1, type=int, help="local rank for distributed training"
     )
     parser.add_argument(
-        "--job_dir",
-        default="/n/home02/emyang/collective_benchmark",
-        type=str,
-        help="job directory",
-    )
-    parser.add_argument(
         "--out_dir",
         default="/n/home02/emyang/collective_benchmark/benchmark_results",
         type=str,
@@ -78,6 +94,12 @@ def parse_args():
         default=False,
         type=bool,
         help="Measure with PyTorch Profiler. Disabled by default.",
+    )
+    parser.add_argument(
+        "--internode_only",
+        default=False,
+        type=bool,
+        help="Benchmark using the internode mesh only",
     )
     parser.add_argument(
         "--async_op",
@@ -96,11 +118,10 @@ def parse_args():
     return args
 
 
-def print_env():
-    print("World Size: ", os.environ["WORLD_SIZE"])
-    print("Master Addr: ", os.environ["MASTER_ADDR"])
-    print("Master Port:", os.environ["MASTER_PORT"])
-    print("Slurm Procid: ", os.environ["SLURM_PROCID"])
+def log_env():
+    logger.info(f"World Size: {os.environ['WORLD_SIZE']}")
+    logger.info(f"Gloabl Rank: {os.environ['RANK']}")
+    logger.info(f"Local Rank: {os.environ['LOCAL_RANK']}")
 
 
 class Task:
@@ -110,37 +131,46 @@ class Task:
         pass
 
     def __call__(self, args: Any) -> Any:
+        init_logger()
 
-        print_env()
-
-
-        if "WORLD_SIZE" in os.environ:
-            args.world_size = int(os.environ["WORLD_SIZE"])
-            self.world_size = args.world_size
-            self.ngpus_per_node = int(os.environ["SLURM_NTASKS_PER_NODE"])
+        log_env()
+        args.world_size = int(os.environ["WORLD_SIZE"])
+        args.global_rank = int(os.environ['RANK'])
+        args.local_rank = int(os.environ['LOCAL_RANK'])
 
         args.distributed = args.world_size > 1
-       
+        device = torch.device(f"cuda:{args.local_rank}")
+        torch.cuda.set_device(device)
+        dist.init_process_group(
+            backend=args.dist_backend,
+            timeout=timedelta(seconds=300)
+        )
+        dims: List[int] = []
+        names: List[str] = []
 
-        if "SLURM_PROCID" in os.environ:
-            args.global_rank = int(os.environ["SLURM_PROCID"])
-            args.local_rank = args.global_rank % self.ngpus_per_node
-            print(args)
-            print("Number of GPUs per node: ", self.ngpus_per_node)
-            print("Number of GPUs actually on this node:", torch.cuda.device_count())
-
-            dist.init_process_group(
-                backend=args.dist_backend,
-                init_method=args.dist_url,
-                world_size=args.world_size,
-                rank=args.global_rank,
-            )
-
-            torch.cuda.set_device(args.local_rank)
-            if args.profile:
-                self.profile(args)
-            else:
-                self.experiment(args)
+        if args.internode_only:
+            dims.append((args.world_size // args.gpus_per_node))
+            names.append("dp")
+            dims.append(args.gpus_per_node)
+            names.append("tp")
+        else:
+            dims.append(args.world_size)
+            names.append("dp")
+        logger.info(f"Building {len(dims)}-D device mesh with {names}, {dims}")
+        names = tuple(names)
+        world_mesh = init_device_mesh("cuda", mesh_shape=dims, mesh_dim_names=names)
+        self.dp_mesh = world_mesh["dp"]
+        self.dp_degree = self.dp_mesh.size()
+        self.dp_rank = self.dp_mesh.get_local_rank()
+        if args.internode_only:
+            self.tp_mesh = world_mesh["tp"]
+            self.tp_degree = self.tp_mesh.size()
+            self.tp_rank = self.tp_mesh.get_local_rank()
+        dist.barrier()
+        if args.profile:
+            self.profile(args)
+        else:
+            self.experiment(args)
         return "Success"
 
     # If the asynchronous operation for the collective is specified,
@@ -177,37 +207,37 @@ class Task:
     def create_tensors_all_reduce(self, size: Tuple[int, ...]) -> Tuple[torch.Tensor]:
         tensor = (
             torch.arange(size, dtype=torch.float32, device=torch.cuda.current_device())
-            + dist.get_rank() * size
+            + self.dp_rank * size
         )
         return (tensor,)
 
     def create_tensors_reduce_scatter(
         self, size: Tuple[int, ...]
     ) -> Tuple[torch.Tensor]:
-        tensor_in:torch.Tensor = torch.arange(size, dtype=torch.float32, device=torch.cuda.current_device())
-        chunks = torch.chunk(tensor_in, self.world_size, dim=0)
-        tensor_out:torch.Tensor = chunks[dist.get_rank()].clone()
+        tensor_in = torch.arange(size, dtype=torch.float32, device=torch.cuda.current_device())
+        chunks = torch.chunk(tensor_in, self.dp_degree, dim=0)
+        tensor_out = chunks[self.dp_rank].clone()
 
         return (tensor_out, tensor_in)
 
     def create_tensors_all_to_all(self, size: Tuple[int, ...]) -> Tuple[torch.Tensor]:
         tensor_in = (
             torch.arange(size * self.world_size, device=torch.cuda.current_device())
-            + dist.get_rank() * size * self.world_size
+            + self.dp_rank * size * self.dp_degree
         )
 
-        tensor_in = list(tensor_in.chunk(self.world_size))
+        tensor_in = list(tensor_in.chunk(self.dp_degree))
         tensor_out = list(
             torch.empty(
-                [size * self.world_size],
+                [size * self.dp_degree],
                 dtype=torch.float32,
                 device=torch.cuda.current_device(),
-            ).chunk(self.world_size)
+            ).chunk(self.dp_degree)
         )
         return (tensor_out, tensor_in)
 
     def create_tensors_broadcast(self, size: Tuple[int, ...]) -> Tuple[torch.Tensor]:
-        if dist.get_rank() == 0:
+        if self.dp_rank == 0:
             return (torch.randn(size, device=torch.cuda.current_device()), 0)
         else:
             return (torch.empty([size], device=torch.cuda.current_device()), 0)
@@ -216,25 +246,25 @@ class Task:
         return (torch.randn(size, device=torch.cuda.current_device()), 0)
 
     def create_tensors_all_gather(self, size: Tuple[int, ...]) -> Tuple[torch.Tensor]:
-        tensor_out:torch.Tensor = torch.arange(size, dtype=torch.float32, device=torch.cuda.current_device())
-        chunks = torch.chunk(tensor_out, self.world_size, dim=0)
-        tensor_in:torch.Tensor = chunks[dist.get_rank()].clone()
+        tensor_out = torch.arange(size, dtype=torch.float32, device=torch.cuda.current_device())
+        chunks = torch.chunk(tensor_out, self.dp_degree, dim=0)
+        tensor_in = chunks[self.dp_rank].clone()
         return (tensor_out, tensor_in)
 
     def create_tensors_gather(self, size: Tuple[int, ...]) -> Tuple[torch.Tensor]:
         tensor = (
             torch.arange(size, dtype=torch.float32, device=torch.cuda.current_device())
             + 1
-            + size * self.world_size * dist.get_rank()
+            + size * self.dp_degree * self.dp_rank
         )
         gather_list = (
             [
                 torch.empty(
                     [size], dtype=torch.float32, device=torch.cuda.current_device()
                 )
-                for _ in range(self.world_size)
+                for _ in range(self.dp_degree)
             ]
-            if dist.get_rank() == 0
+            if self.dp_rank == 0
             else None
         )
         return (tensor, gather_list, 0)
@@ -271,50 +301,58 @@ class Task:
         elif collective_to_benchmark == Collective.all_gather:
             return 2
         elif collective_to_benchmark == Collective.gather:
-            return self.world_size + 1
+            return self.dp_degree + 1
 
     def experiment(self, args):
+
+        if args.internode_only:
+            f_name = args.collective.__str__() + f"_{self.dp_degree * self.tp_degree}_{self.tp_rank}_{self.dp_rank}"
+            data_dir = f"{args.collective.__str__()}_{self.dp_degree * self.tp_degree}"
+        else:
+            f_name = args.collective.__str__() + f"_{self.dp_degree}_{self.dp_rank}"
+            data_dir = f"{args.collective.__str__()}_{self.dp_degree}"
+        os.makedirs(os.path.join(args.out_dir, args.collective.__str__()), exist_ok=True)
+        os.makedirs(os.path.join(args.out_dir, args.collective.__str__(), data_dir), exist_ok=True)
+        if args.async_op:
+            f_name += "_async"
+        fout = open(os.path.join(args.out_dir, args.collective.__str__(), data_dir, f"{f_name}.data"), 'w')
+
+        GiB = 2 ** 30
+        MiB = 2 ** 20
+        KiB = 2 ** 10
+
         # Get total memory available on CUDA device
         total_mem = torch.cuda.get_device_properties(0).total_memory
-        total_mem -= 2 * (2 ** 30)  # subtract 2 GB
+        total_mem -= 2 * GiB  # subtract 2 GB
 
         collective_function = self.get_collective_function(
             args.collective, async_op=args.async_op
         )
         create_args_function = self.get_create_tensor_function(args.collective)
+        input_kwargs = {"group": self.dp_mesh.get_group()}
 
-        warmup_iters = 2
-        niters = 11
-        size = 15 * (2 ** 10)  # Initial size is 15 KB
+        warmup_iters = 3
+        niters = 12
+        size = 15 * KiB  # Initial size is 15 KB
 
         current_size = 0
-        num_tasks = os.environ["WORLD_SIZE"]
-        name = args.collective.__str__() + f"_{num_tasks}_{dist.get_rank()}"
-        data_dir = f"{args.out_dir}/{args.collective.__str__()}_{args.world_size}"
-        Path(data_dir).mkdir(parents=True, exist_ok=True)
-        data_file = f"{data_dir}/{name}"
-        if args.async_op:
-            data_file += "_async"
-        fout = open(f"{data_file}.data", "w")
-
-
 
         # Construct data size range for benchmarking
         data_sizes = []
         # Exponential data sizes
-        for i in range(10, 30):
+        for i in range(10, 29):
             data_sizes.append((2 ** i) * 15)
 
         # Additional data sizes
-        for i in range(44):
+        for i in range(42):
             if i == 1:
-                size = 90 * (2 ** 10)  # increments of 90 KB
-            elif i == 10:
-                size = 15 * (2 ** 16)  # increments of ~1 MB
-            elif i == 25:
-                size = 15 * (2 ** 20)  # increments of 15 MB
-            elif i == 35:
-                size = 90 * (2 ** 20)  # increments of 90 MB
+                size = 90 * KiB  # increments of 90 KB
+            elif i == 8:
+                size = 15 * (MiB // 4)  # increments of ~1 MB
+            elif i == 20:
+                size = 15 * MiB  # increments of 15 MB
+            elif i == 32:
+                size = 90 * MiB  # increments of 90 MB
             current_size += size
             if current_size not in data_sizes:
                 data_sizes.append(current_size)
@@ -322,7 +360,7 @@ class Task:
         data_sizes.sort()
         
         for size in data_sizes:
-            size_in_mb = size / 2 ** 20
+            size_in_mb = size / MiB
 
             if size > (
                 total_mem // self.get_number_of_tensors(args.collective)
@@ -331,14 +369,13 @@ class Task:
             try:
                 input_args = create_args_function(size // 4)
             except torch.cuda.OutOfMemoryError:
-                print("Ran out of CUDA memory during warm-up")
+                logger.info("Ran out of CUDA memory during warm-up")
             ######################################
             # 1. warming up CUDACachingAllocator #
             ######################################
             for _ in range(warmup_iters):
+                collective_function(*input_args, **input_kwargs)
 
-                collective_function(*input_args)
-                torch.cuda.synchronize()
             ##################################################################
             # 2. measure raw delays and memory to rule out profiler overhead #
             ##################################################################
@@ -348,7 +385,7 @@ class Task:
 
             for experiment_idx in range(niters):
                     events_pre[experiment_idx].record()
-                    collective_function(*input_args)
+                    collective_function(*input_args, **input_kwargs)
                     events_post[experiment_idx].record()
 
             torch.cuda.synchronize()
@@ -356,16 +393,17 @@ class Task:
             delays = [
                 pre.elapsed_time(post) for pre, post in zip(events_pre, events_post)
             ]
-            #discard first experiment run
-            delays = delays[1:]
+            #discard first two experiment runs
+            delays = delays[2:]
             # write results
             for delay in delays:
                 fout.write(f"{size_in_mb}, {delay:.4f}\n")
 
             # wait for all peers to finish
-            dist.barrier(device_ids=[args.local_rank])
-
+            dist.barrier()
+        fout.flush()
         fout.close()
+        dist.barrier()
         self.teardown()
         return {
             "data_size": size_in_mb,
@@ -391,7 +429,7 @@ class Task:
         try:
             input_args = create_args_function(args.profile_size)
         except torch.cuda.OutOfMemoryError:
-            print("Ran out of CUDA memory creating tensor of size", args.profile_size)
+            logger.info("Ran out of CUDA memory creating tensor of size", args.profile_size)
         else:
             with profile(
                 activities=[ProfilerActivity.CUDA],
